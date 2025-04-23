@@ -10,25 +10,11 @@ unsafe fn panic(_info: &PanicInfo) -> ! {
     loop {}
 }
 
-mod libc {
-    macro_rules! printf {
-        ($fmt:literal $($args:tt)*) => {{
-            use core::ffi::{c_char, c_int};
-            extern "C" {
-                #[link_name = "printf"]
-                pub fn printf_raw(fmt: *const c_char, ...) -> c_int;
-            }
-            printf_raw($fmt.as_ptr() $($args)*)
-        }};
-    }
-    pub(crate) use printf;
-}
-
 #[derive(Clone, Copy)]
 struct Foo {
-    i: i32,
-    f: c_double,
-    s: *const CStr,
+    pub i: i32,
+    pub f: c_double,
+    pub s: *const CStr,
 }
 
 impl Foo {
