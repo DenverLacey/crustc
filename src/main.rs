@@ -2,7 +2,8 @@
 #![no_main]
 // #![feature(arbitrary_self_types)]
 
-use core::ffi::{c_void, c_char, c_int, c_double};
+use core::ffi::{c_void, c_char, c_int, c_double, CStr};
+use core::mem::size_of;
 use core::panic::PanicInfo;
 
 #[panic_handler]
@@ -28,29 +29,33 @@ mod libc {
 }
 
 #[derive(Clone, Copy)]
-#[repr(C)]
 struct Foo {
     i: i32,
     f: c_double,
-    s: *const c_char,
+    s: *const CStr,
 }
 
 impl Foo {
-    pub unsafe fn new(i: i32, f: c_double, s: *const c_char) -> Self {
+    pub unsafe fn new(i: i32, f: c_double, s: *const CStr) -> Self {
         Self { i, f, s }
     }
 
     pub unsafe fn bar(me: *const Self) {
-        libc::printf!(c"The Foo says '%s' with %d and %f.\n", (*me).s, (*me).i, (*me).f);
+        libc::printf!(c"The Foo says '%s' with %d and %f.\n", (*(*me).s).as_ptr(), (*me).i, (*me).f);
     }
 }
 
 #[no_mangle]
-unsafe extern "C" fn main(mut _argc: i32, mut _argv: *mut *mut c_char) -> i32 {
+unsafe extern "C" fn main(argc: c_int, argv: *const *const c_char) -> c_int {
     libc::printf!(c"hello crust!\n");
 
-    let foo = Foo::new(52, 1.28, c"howdy do?".as_ptr());
+    let foo = Foo::new(52, 1.28, c"howdy do?");
     Foo::bar(&foo);
+
+    for i in 0..argc {
+        let arg = *argv.add(i as usize);
+        libc::printf!(c"[%d] %s\n", i, arg);
+    }
 
     0
 }
