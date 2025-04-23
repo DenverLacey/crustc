@@ -2,8 +2,7 @@
 #![no_main]
 // #![feature(arbitrary_self_types)]
 
-use core::ffi::{c_void, c_char, c_int, c_double, CStr};
-use core::mem::size_of;
+use core::ffi::{c_char, c_int, c_double, CStr};
 use core::panic::PanicInfo;
 
 #[panic_handler]
@@ -12,9 +11,6 @@ unsafe fn panic(_info: &PanicInfo) -> ! {
 }
 
 mod libc {
-    use core::ffi::c_void;
-    use super::c_char;
-
     macro_rules! printf {
         ($fmt:literal $($args:tt)*) => {{
             use core::ffi::{c_char, c_int};

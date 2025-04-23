@@ -13,8 +13,8 @@ A transpiler from 'Crust' to Rust source code written in the Crust style as spec
 1. No cargo, build with rustc directly.
 1. No std, libc is allowed.
 1. Only Edition 2021.
-1. All user structs #\[derive(Clone, Copy)].
-1. Everything is pub by default.
+2. All user structs \#\[derive(Clone, Copy)].
+3. Everything is pub by default.
 
 > "*These rules may change. The goal is to make programming in Rust fun.*" - Tsoding
 
