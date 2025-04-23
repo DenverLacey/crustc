@@ -3,12 +3,6 @@
 // #![feature(arbitrary_self_types)]
 
 use core::ffi::{c_char, c_int, c_double, CStr};
-use core::panic::PanicInfo;
-
-#[panic_handler]
-unsafe fn panic(_info: &PanicInfo) -> ! {
-    loop {}
-}
 
 #[derive(Clone, Copy)]
 struct Foo {
@@ -37,6 +31,30 @@ unsafe extern "C" fn main(argc: c_int, argv: *const *const c_char) -> c_int {
     for i in 0..argc {
         let arg = *argv.add(i as usize);
         libc::printf!(c"[%d] %s\n", i, arg);
+    }
+
+    {
+        use ariadne::{Color, Label, Report, ReportKind, Source};
+
+        Report::build(ReportKind::Error, 0..0)
+            .with_message("Incompatible types")
+            // .with_config(Config::default().with_compact(true))
+            .with_label(Label::new(0..1).with_color(Color::Red))
+            .with_label(
+                Label::new(2..3)
+                    .with_color(Color::Blue)
+                    .with_message("`b` for banana")
+                    .with_order(1),
+            )
+            .with_label(Label::new(4..5).with_color(Color::Green))
+            .with_label(
+                Label::new(7..9)
+                    .with_color(Color::Cyan)
+                    .with_message("`e` for emerald"),
+            )
+            .finish()
+            .print(Source::from("a b c d e f"))
+            .unwrap();
     }
 
     0
