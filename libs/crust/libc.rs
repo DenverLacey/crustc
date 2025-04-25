@@ -38,7 +38,7 @@ extern "C" {
     fn malloc_raw(n: usize) -> *mut c_void;
 
     #[link_name = "calloc"]
-    fn calloc_raw(size: usize, n: usize) -> *mut c_void;
+    fn calloc_raw(n: usize, size: usize) -> *mut c_void;
 }
 
 pub unsafe fn fopen(pathname: *const CStr, mode: *const CStr) -> *mut FILE {
@@ -65,7 +65,7 @@ pub unsafe fn malloc(n: usize) -> *mut c_void {
     malloc_raw(n)
 }
 
-pub unsafe fn calloc(size: usize, n: usize) -> *mut c_void {
-    calloc_raw(size, n)
+pub unsafe fn calloc(n: usize, size: usize) -> *mut c_void {
+    calloc_raw(n, size)
 }
 

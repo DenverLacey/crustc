@@ -1,8 +1,11 @@
-#![no_std]
-#![no_main]
-// #![feature(arbitrary_self_types)]
+use std::ffi::{c_char, c_double, CStr};
+use std::process::ExitCode;
 
-use core::ffi::{c_char, c_int, c_double, CStr};
+extern crate quote;
+extern crate proc_macro2;
+
+use quote::quote;
+use proc_macro2::TokenTree;
 
 #[derive(Clone, Copy)]
 struct Foo {
@@ -21,17 +24,9 @@ impl Foo {
     }
 }
 
-#[no_mangle]
-unsafe extern "C" fn main(argc: c_int, argv: *const *const c_char) -> c_int {
-    libc::printf!(c"hello crust!\n");
-
+unsafe fn start() -> ExitCode {
     let foo = Foo::new(52, 1.28, c"howdy do?");
     Foo::bar(&foo);
-
-    for i in 0..argc {
-        let arg = *argv.add(i as usize);
-        libc::printf!(c"[%d] %s\n", i, arg);
-    }
 
     {
         use ariadne::{Color, Label, Report, ReportKind, Source};
@@ -58,17 +53,18 @@ unsafe extern "C" fn main(argc: c_int, argv: *const *const c_char) -> c_int {
     }
 
     {
+        libc::printf!(c"=== syn test ===\n");
         let file = libc::fopen(c"examples/hello/hello.rs", c"r");
         if file == core::ptr::null_mut() {
             libc::printf!(c"ERROR: Failed to read 'examples/hello/main.rs'.");
-            return 1;
+            return ExitCode::FAILURE;
         }
 
         libc::fseek(file, 0, libc::SEEK_END);
         let filesz = libc::ftell(file);
         libc::rewind(file);
 
-        let codebuf = libc::calloc(1, (filesz+1) as usize) as *const c_char;
+        let codebuf = libc::calloc((filesz+1) as usize, 1) as *const c_char;
         libc::fread(codebuf, 1, filesz as usize, file);
 
         let code = CStr::from_ptr(codebuf);
@@ -76,10 +72,38 @@ unsafe extern "C" fn main(argc: c_int, argv: *const *const c_char) -> c_int {
 
         let code_str = code.to_str().unwrap();
         let syntax = syn::parse_file(code_str).unwrap();
-        print_syntax(syntax);
+        println!("{:#?}", syntax);
     }
 
-    0
+    {
+        libc::printf!(c"=== quote/proc_macro2 test ===\n");
+        let code = quote! {
+            let x = 0;
+        };
+
+        for tt in code {
+            match tt {
+                TokenTree::Group(_group) => {
+                    println!("Group");
+                }
+                TokenTree::Ident(ident) => {
+                    println!("Ident: {ident}");
+                }
+                TokenTree::Punct(punct) => {
+                    println!("Punct: {punct}");
+                }
+                TokenTree::Literal(lit) => {
+                    println!("Literal: {lit}");
+                }
+            }
+        }
+    }
+
+    ExitCode::SUCCESS
+}
+
+fn main() -> ExitCode {
+    unsafe { start() }
 }
 
 unsafe fn print_syntax(syntax: syn::File) {
@@ -93,13 +117,13 @@ unsafe fn print_syntax(syntax: syn::File) {
     }
     for attr in syntax.attrs {
         match attr.meta {
-            syn::Meta::Path(path) => {
+            syn::Meta::Path(_path) => {
                 todo!("print Meta::Path");
             }
-            syn::Meta::List(list) => {
+            syn::Meta::List(_list) => {
                 todo!("print Meta::List");
             }
-            syn::Meta::NameValue(name_value) => {
+            syn::Meta::NameValue(_name_value) => {
                 todo!("print Meta::NameValue");
             }
         }
@@ -110,52 +134,52 @@ unsafe fn print_syntax(syntax: syn::File) {
     }
     for item in syntax.items {
         match item {
-            syn::Item::Const(r#const) => {
+            syn::Item::Const(r#_const) => {
                 libc::printf!(c"Const\n");
             }
-            syn::Item::Enum(r#enum) => {
+            syn::Item::Enum(r#_enum) => {
                 libc::printf!(c"Enum\n");
             }
-            syn::Item::ExternCrate(extern_crate) => {
+            syn::Item::ExternCrate(_extern_crate) => {
                 libc::printf!(c"ExternCrate\n");
             }
-            syn::Item::Fn(r#fn) => {
+            syn::Item::Fn(r#_fn) => {
                 libc::printf!(c"Fn\n");
             }
-            syn::Item::ForeignMod(foreign_mod) => {
+            syn::Item::ForeignMod(_foreign_mod) => {
                 libc::printf!(c"ForeignMod\n");
             }
-            syn::Item::Impl(r#imlp) => {
+            syn::Item::Impl(r#_imlp) => {
                 libc::printf!(c"Impl\n");
             }
-            syn::Item::Macro(r#macro) => {
+            syn::Item::Macro(r#_macro) => {
                 libc::printf!(c"Macro\n");
             }
-            syn::Item::Mod(r#mod) => {
+            syn::Item::Mod(r#_mod) => {
                 libc::printf!(c"Mod\n");
             }
-            syn::Item::Static(r#static) => {
+            syn::Item::Static(r#_static) => {
                 libc::printf!(c"Static\n");
             }
-            syn::Item::Struct(r#struct) => {
+            syn::Item::Struct(r#_struct) => {
                 libc::printf!(c"Struct\n");
             }
-            syn::Item::Trait(r#trait) => {
+            syn::Item::Trait(r#_trait) => {
                 libc::printf!(c"Trait\n");
             }
-            syn::Item::TraitAlias(trait_alias) => {
+            syn::Item::TraitAlias(_trait_alias) => {
                 libc::printf!(c"TraitAlias\n");
             }
-            syn::Item::Type(r#type) => {
+            syn::Item::Type(r#_type) => {
                 libc::printf!(c"Type\n");
             }
-            syn::Item::Union(r#union) => {
+            syn::Item::Union(r#_union) => {
                 libc::printf!(c"Union\n");
             }
-            syn::Item::Use(r#use) => {
+            syn::Item::Use(r#_use) => {
                 libc::printf!(c"Use\n");
             }
-            syn::Item::Verbatim(token_stream) => {
+            syn::Item::Verbatim(_token_stream) => {
                 libc::printf!(c"Verbatim\n");
             }
             _ => {
