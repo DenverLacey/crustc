@@ -1,94 +1,18 @@
-use std::ffi::{c_char, c_double, CStr};
+use std::ffi::{c_char, CStr, CString};
+use std::{env, ptr};
 
-extern crate quote;
-use quote::quote;
-
-#[derive(Clone, Copy)]
-struct Foo {
-    pub i: i32,
-    pub f: c_double,
-    pub s: *const CStr,
-}
-
-impl Foo {
-    pub unsafe fn new(i: i32, f: c_double, s: *const CStr) -> Self {
-        Self { i, f, s }
-    }
-
-    pub unsafe fn bar(me: *const Self) {
-        libc::printf!(c"The Foo says '%s' with %d and %f.\n", (*(*me).s).as_ptr(), (*me).i, (*me).f);
-    }
-}
-
-// unsafe fn _test_ariadne() {
-//     use ariadne::{Color, Label, Report, ReportKind, Source};
-//
-//     Report::build(ReportKind::Error, 0..0)
-//         .with_message("Incompatible types")
-//         // .with_config(Config::default().with_compact(true))
-//         .with_label(Label::new(0..1).with_color(Color::Red))
-//         .with_label(
-//             Label::new(2..3)
-//                 .with_color(Color::Blue)
-//                 .with_message("`b` for banana")
-//                 .with_order(1),
-//         )
-//         .with_label(Label::new(4..5).with_color(Color::Green))
-//         .with_label(
-//             Label::new(7..9)
-//                 .with_color(Color::Cyan)
-//                 .with_message("`e` for emerald"),
-//         )
-//         .finish()
-//         .print(Source::from("a b c d e f"))
-//         .unwrap();
-//
-//     libc::printf!(c"=== syn test ===\n");
-//     let file = libc::fopen(c"examples/hello/hello.rs", c"r");
-//     if file == core::ptr::null_mut() {
-//         libc::printf!(c"ERROR: Failed to read 'examples/hello/main.rs'.");
-//         return;
-//     }
-//
-//     libc::fseek(file, 0, libc::SEEK_END);
-//     let filesz = libc::ftell(file);
-//     libc::rewind(file);
-//
-//     let codebuf = libc::calloc((filesz+1) as usize, 1) as *const c_char;
-//     libc::fread(codebuf, 1, filesz as usize, file);
-//
-//     let code = CStr::from_ptr(codebuf);
-//     libc::printf!(c"Source code:\n%s\n", code);
-//
-//     let code_str = code.to_str().unwrap();
-//     let syntax = syn::parse_file(code_str).unwrap();
-//     println!("{:#?}", syntax);
-// }
-
-unsafe fn _test_quote() {
-    let code = quote! {
-        unsafe fn foo(s: *const CStr) {
-            let x = 0;
-            libc::printf!(c"Foo: %s\n", (*s).as_ptr());
-        }
-    };
-    println!("{code:#}");
-}
-
-unsafe fn _test_annotate_snippets() {
+unsafe fn report_error_not_enough_args(args: *const [*const CStr]) {
     use annotate_snippets::{AnnotationKind, Group, Level, Renderer, Snippet};
-    const SOURCE: &'static str = r#"let x = 5 + "hello";"#;
 
-    let message = Level::ERROR.header("type mismatch!").group(
+    let arg_len = (*(*args)[0]).to_bytes().len();
+
+    let message = Level::ERROR.header("not enough arguments").group(
         Group::new().element(
-            Snippet::source(SOURCE)
-                .line_start(1)
-                .origin("unknown")
-                .fold(true)
+            Snippet::source((*(*args)[0]).to_str().unwrap())
                 .annotation(
                     AnnotationKind::Primary
-                        .span(12..19)
-                        .label("`&str` cannot be added to an `i32`")
+                        .span(arg_len..arg_len)
+                        .label("expected path to source file here")
                 ),
         ),
     );
@@ -97,11 +21,70 @@ unsafe fn _test_annotate_snippets() {
     println!("{}", renderer.render(message));
 }
 
-unsafe fn start() {
-    _test_annotate_snippets();
+unsafe fn report_error_failed_to_open_source_file(args: *const [*const CStr]) {
+    use annotate_snippets::{AnnotationKind, Group, Level, Renderer, Snippet};
+
+    let mut line = String::new();
+    for &arg in (*args).iter() {
+        line.extend((*arg).to_str().unwrap().chars());
+        line.push(' ');
+    }
+
+    let arg_start = (*(*args)[0]).to_bytes().len() + 1;
+    let arg_end = arg_start + (*(*args)[1]).to_bytes().len();
+
+    let message = Level::ERROR.header("failed to open source file").group(
+        Group::new().element(
+            Snippet::source(&line)
+                .annotation(
+                    AnnotationKind::Primary
+                        .span(arg_start..arg_end)
+                        .label("couldn't open this file")
+                ),
+        ),
+    );
+
+    let renderer = Renderer::styled();
+    println!("{}", renderer.render(message));
+}
+
+unsafe fn start(args: *const [*const CStr]) {
+    if args.len() <= 1 {
+        report_error_not_enough_args(args);
+        return;
+    }
+
+    let source_file = libc::fopen((*args)[1], c"r");
+    if source_file == ptr::null_mut() {
+        report_error_failed_to_open_source_file(args);
+        return;
+    }
+
+    libc::fseek(source_file, 0, libc::SEEK_END);
+    let filesz = libc::ftell(source_file);
+    libc::rewind(source_file);
+
+    let source_buf = libc::calloc((filesz+1) as usize, 1) as *const c_char;
+    libc::fread(source_buf, 1, filesz as usize, source_file);
+
+    libc::printf!(c"=== Source =========================================\n");
+    let source = CStr::from_ptr(source_buf);
+    libc::printf!(c"%s\n", source);
+
+    libc::printf!(c"=== Parse ==========================================\n");
+    let source_tree = syn::parse_file(source.to_str().unwrap()).unwrap();
+    println!("{:#?}", source_tree);
+
+    libc::printf!(c"=== Analysis =======================================\n");
+    libc::printf!(c"Not yet implemented\n");
 }
 
 fn main() {
-    unsafe { start() }
+    let args = Box::leak(env::args()
+        .map(|a| Box::leak(CString::new(a).unwrap().into_boxed_c_str()) as *const CStr)
+        .collect::<Vec<_>>()
+        .into_boxed_slice()) as *const [*const CStr];
+
+    unsafe { start(args) }
 }
 

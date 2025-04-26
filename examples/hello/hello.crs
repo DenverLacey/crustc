@@ -1,0 +1,8 @@
+use core::ffi::CStr;
+use libc::printf;
+
+fn main(_argv: *const [*const CStr]) -> i32 {
+    printf!("hello world\n");
+    0
+}
+
