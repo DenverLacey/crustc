@@ -1,0 +1,6 @@
+cargo:rerun-if-changed=build.rs
+cargo:rustc-cfg=check_cfg
+cargo:rustc-check-cfg=cfg(check_cfg)
+cargo:rustc-check-cfg=cfg(syn_disable_nightly_tests)
+cargo:rustc-check-cfg=cfg(syn_only)
+cargo:rustc-cfg=syn_disable_nightly_tests

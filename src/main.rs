@@ -1,5 +1,9 @@
-use std::ffi::{c_char, CStr, CString};
+use std::ffi::{c_char, CStr, CString, OsString};
+use std::fs::File;
+use std::io::Write;
+use std::process::Command;
 use std::{env, ptr};
+use syn::__private::ToTokens;
 
 unsafe fn report_error_not_enough_args(args: *const [*const CStr]) {
     use annotate_snippets::{AnnotationKind, Group, Level, Renderer, Snippet};
@@ -54,7 +58,9 @@ unsafe fn start(args: *const [*const CStr]) {
         return;
     }
 
-    let source_file = libc::fopen((*args)[1], c"r");
+    let source_path = (*args)[1];
+
+    let source_file = libc::fopen(source_path, c"r");
     if source_file == ptr::null_mut() {
         report_error_failed_to_open_source_file(args);
         return;
@@ -72,11 +78,33 @@ unsafe fn start(args: *const [*const CStr]) {
     libc::printf!(c"%s\n", source);
 
     libc::printf!(c"=== Parse ==========================================\n");
-    let source_tree = syn::parse_file(source.to_str().unwrap()).unwrap();
+    let mut source_tree = syn::parse_file(source.to_str().unwrap()).unwrap();
     println!("{:#?}", source_tree);
 
     libc::printf!(c"=== Analysis =======================================\n");
-    libc::printf!(c"Not yet implemented\n");
+
+    for item in &mut source_tree.items {
+        match item {
+            syn::Item::Fn(fn_item) => {
+                fn_item.sig.unsafety.get_or_insert_default();
+            }
+            _ => {}
+        }
+    }
+
+    libc::printf!(c"=== Code Generation ================================\n");
+    let generated_path = CString::new(std::format!("{}.generated.rs", (*source_path).to_str().unwrap())).unwrap();
+    libc::printf!(c"INFO: Outputting altered code to %s\n", generated_path.as_ptr());
+
+    let source_tt = source_tree.into_token_stream();
+    let mut out = File::create(generated_path.to_str().unwrap()).unwrap();
+    write!(out, "{source_tt}").unwrap();
+
+    libc::printf!(c"CMD: Formatting %s\n", generated_path.as_ptr());
+    Command::new("rustfmt")
+        .args([OsString::from(generated_path.to_str().unwrap())])
+        .output()
+        .expect("ERR: Failed to format generated code");
 }
 
 fn main() {
