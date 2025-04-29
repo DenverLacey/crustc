@@ -1,3 +1,4 @@
+#![no_std]
 use core::ffi::CStr;
 use libc::printf;
 unsafe fn main(_argv: *const [*const CStr]) -> i32 {

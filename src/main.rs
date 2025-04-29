@@ -5,6 +5,9 @@ use std::process::Command;
 use std::{env, ptr};
 use syn::__private::ToTokens;
 
+extern crate proc_macro2;
+use proc_macro2::Span;
+
 unsafe fn report_error_not_enough_args(args: *const [*const CStr]) {
     use annotate_snippets::{AnnotationKind, Group, Level, Renderer, Snippet};
 
@@ -82,6 +85,23 @@ unsafe fn start(args: *const [*const CStr]) {
     println!("{:#?}", source_tree);
 
     libc::printf!(c"=== Analysis =======================================\n");
+
+    // TODO: Check if user already added `#![no_std]` attribute
+    let mut no_std = syn::punctuated::Punctuated::new();
+    no_std.push_value(syn::PathSegment {
+        ident: syn::Ident::new("no_std", Span::call_site()), // `call_site` is a hack
+        arguments: syn::PathArguments::None,
+    });
+
+    source_tree.attrs.push(syn::Attribute {
+        pound_token: <syn::Token![#]>::default(),
+        style: syn::AttrStyle::Inner(<syn::Token![!]>::default()),
+        bracket_token: syn::token::Bracket::default(),
+        meta: syn::Meta::Path(syn::Path {
+            leading_colon: None,
+            segments: no_std,
+        }),
+    });
 
     for item in &mut source_tree.items {
         match item {
