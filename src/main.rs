@@ -8,6 +8,9 @@ use syn::__private::ToTokens;
 extern crate proc_macro2;
 use proc_macro2::Span;
 
+extern crate quote;
+use quote::quote;
+
 unsafe fn report_error_not_enough_args(args: *const [*const CStr]) {
     use annotate_snippets::{AnnotationKind, Group, Level, Renderer, Snippet};
 
@@ -55,6 +58,14 @@ unsafe fn report_error_failed_to_open_source_file(args: *const [*const CStr]) {
     println!("{}", renderer.render(message));
 }
 
+unsafe fn change_fields_visibility<'a, I>(fields: I) where I: IntoIterator<Item = &'a mut syn::Field> {
+    for field in fields {
+        if matches!(field.vis, syn::Visibility::Inherited) {
+            field.vis = syn::Visibility::Public(<syn::Token![pub]>::default());
+        }
+    }
+}
+
 unsafe fn start(args: *const [*const CStr]) {
     if args.len() <= 1 {
         report_error_not_enough_args(args);
@@ -93,6 +104,12 @@ unsafe fn start(args: *const [*const CStr]) {
         arguments: syn::PathArguments::None,
     });
 
+    let mut derive = syn::punctuated::Punctuated::new();
+    derive.push_value(syn::PathSegment {
+        ident: syn::Ident::new("derive", Span::call_site()), // `call_site` is a hack
+        arguments: syn::PathArguments::None,
+    });
+
     source_tree.attrs.push(syn::Attribute {
         pound_token: <syn::Token![#]>::default(),
         style: syn::AttrStyle::Inner(<syn::Token![!]>::default()),
@@ -105,8 +122,54 @@ unsafe fn start(args: *const [*const CStr]) {
 
     for item in &mut source_tree.items {
         match item {
-            syn::Item::Fn(fn_item) => {
-                fn_item.sig.unsafety.get_or_insert_default();
+            syn::Item::Enum(item) => {
+                item.attrs.push(syn::Attribute {
+                    pound_token: <syn::Token![#]>::default(),
+                    style: syn::AttrStyle::Outer,
+                    bracket_token: syn::token::Bracket::default(),
+                    meta: syn::Meta::List(syn::MetaList {
+                        path: syn::Path {
+                            leading_colon: None,
+                            segments: derive.clone(),
+                        },
+                        delimiter: syn::MacroDelimiter::Paren(syn::token::Paren::default()),
+                        tokens: quote!(Clone, Copy),
+                    }),
+                });
+                if matches!(item.vis, syn::Visibility::Inherited) {
+                    item.vis = syn::Visibility::Public(<syn::Token![pub]>::default());
+                }
+            }
+            syn::Item::Fn(item) => {
+                item.sig.unsafety.get_or_insert_default();
+                if matches!(item.vis, syn::Visibility::Inherited) {
+                    item.vis = syn::Visibility::Public(<syn::Token![pub]>::default());
+                }
+            }
+            syn::Item::Struct(item) => {
+                item.attrs.push(syn::Attribute {
+                    pound_token: <syn::Token![#]>::default(),
+                    style: syn::AttrStyle::Outer,
+                    bracket_token: syn::token::Bracket::default(),
+                    meta: syn::Meta::List(syn::MetaList {
+                        path: syn::Path {
+                            leading_colon: None,
+                            segments: derive.clone(),
+                        },
+                        delimiter: syn::MacroDelimiter::Paren(syn::token::Paren::default()),
+                        tokens: quote!(Clone, Copy),
+                    }),
+                });
+                
+                if matches!(item.vis, syn::Visibility::Inherited) {
+                    item.vis = syn::Visibility::Public(<syn::Token![pub]>::default());
+                }
+
+                match &mut item.fields {
+                    syn::Fields::Named(fields) => change_fields_visibility(&mut fields.named),
+                    syn::Fields::Unnamed(fields) => change_fields_visibility(&mut fields.unnamed),
+                    _ => {}
+                }
             }
             _ => {}
         }
