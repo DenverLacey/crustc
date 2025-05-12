@@ -1,21 +1,6 @@
 use core::ffi::CStr;
 use libc::printf;
 
-enum Enum {
-    None,
-    One,
-    Two,
-}
-
-#[repr(C)]
-struct Struct {
-    x: i32,
-    y: i32,
-    pub(self) hidden: (),
-}
-
-// struct Tuple(x: i32, y: i32);
-
 pub(self) fn foo(n: i32) -> i32 {
     n * 2 * (libc::rand() as f32 / libc::RAND_MAX as f32)
 }

@@ -1,0 +1,15 @@
+enum Enum {
+    None,
+    One,
+    Two,
+}
+
+#[repr(C)]
+struct Struct {
+    x: i32,
+    y: i32,
+    pub(self) hidden: (),
+}
+
+struct Tuple(i32, i32);
+

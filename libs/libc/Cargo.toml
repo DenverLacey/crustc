@@ -1,0 +1,9 @@
+[package]
+name = "libc"
+version = "0.1.0"
+
+[lib]
+crate-type = ["lib"]
+bench = false
+path = "libc.rs"
+

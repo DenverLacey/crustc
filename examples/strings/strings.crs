@@ -1,0 +1,9 @@
+use libc::printf;
+
+static STATIC_STRING: *const CStr = "hello";
+const CONST_STRING: *const CStr   = "world";
+
+fn main() {
+    printf!("%s %s\n", STATIC_STRING, CONST_STRING);
+}
+
