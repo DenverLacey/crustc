@@ -6,4 +6,4 @@ edition = "2021"
 [dependencies]
 annotate-snippets = "0.11.5"
 libc = { path = "libs/libc" }
-syn = { version = "2.0.101", features = ["parsing", "printing", "full", "extra-traits"] }
+
