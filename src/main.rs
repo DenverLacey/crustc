@@ -40,7 +40,6 @@ impl Callbacks for MyCallbacks {
             let item = &tcx.hir_item(item_id);
             if let rustc_hir::ItemKind::Fn { ident, sig, .. } = item.kind {
                 println!("fn {}: {:?}", ident, sig);
-                // println!("fn {}", ident);
             }
         }
 
