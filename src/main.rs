@@ -28,9 +28,19 @@ use std::{
     ptr,
 };
 
-struct MyCallbacks;
+macro_rules! not_implemented {
+    () => {{
+        println!("{}:{}: TODO: Not yet implemented.", file!(), line!());
+    }};
+    ($fmt:literal $($args:tt)?) => {{
+        print!("{}:{}: TODO: ", file!(), line!());
+        println!($fmt $($args)?);
+    }};
+}
 
-impl Callbacks for MyCallbacks {
+struct CrustCallbacks;
+
+impl Callbacks for CrustCallbacks {
     fn after_expansion<'tcx>(
         &mut self,
         compiler: &interface::Compiler,
@@ -38,12 +48,32 @@ impl Callbacks for MyCallbacks {
     ) -> rustc_driver::Compilation {
         for item_id in tcx.hir_free_items() {
             let item = &tcx.hir_item(item_id);
-            if let rustc_hir::ItemKind::Fn { ident, sig, .. } = item.kind {
-                println!("fn {}: {:?}", ident, sig);
-            }
+            compile_item(&item.kind);
         }
 
         rustc_driver::Compilation::Stop
+    }
+}
+
+fn compile_item<'hir>(item: &rustc_hir::ItemKind<'hir>) {
+    use rustc_hir::ItemKind as IK;
+    match item {
+        IK::ExternCrate(_sym, _id) => not_implemented!("ExternCrate"),
+        IK::Use(_path, _kind) => not_implemented!("Use"),
+        IK::Static(_id, _ty, _mut, _body_id) => not_implemented!("Static"),
+        IK::Const(_id, _ty, _generics, _body_id) => not_implemented!("Const"),
+        IK::Fn { ident: _, sig, generics: _, body: _, has_body: _ } => not_implemented!("Fn"),
+        IK::Macro(_id, _def, _kind) => not_implemented!("Macro"),
+        IK::Mod(_id, _mod) => not_implemented!("Mod"),
+        IK::ForeignMod { abi: _, items: _ } => not_implemented!("ForeignMod "),
+        IK::GlobalAsm { asm: _, fake_body: _ } => not_implemented!("GlobalAsm "),
+        IK::TyAlias(_id, _ty, _generics) => not_implemented!("TyAlias"),
+        IK::Enum(_id, _def, _generics) => not_implemented!("Enum"),
+        IK::Struct(_id, _var, _generics) => not_implemented!("Struct"),
+        IK::Union(_id, _var, _generics) => not_implemented!("Union"),
+        IK::Trait(_is_auto, _safety, _id, _generics, _generic_bounds, _item_refs) => not_implemented!("Trait"),
+        IK::TraitAlias(_id, _generics, _generic_bounds) => not_implemented!("TraitAlias"),
+        IK::Impl(_impl) => not_implemented!("Impl"),
     }
 }
 
@@ -131,7 +161,7 @@ fn main() {
             "--extern=libc=target/debug/deps/liblibc-10ee459ca4890310.rlib".to_string(), // WARN: hardcoded path to libc in our own deps is whack
             file,
         ],
-        &mut MyCallbacks,
+        &mut CrustCallbacks,
     );
 }
 
