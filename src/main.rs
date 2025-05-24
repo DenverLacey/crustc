@@ -19,13 +19,7 @@ use rustc_interface::interface;
 use rustc_hir::intravisit::{self, Visitor};
 use rustc_middle::ty::TyCtxt;
 use std::{
-    ffi::{c_char, CStr, CString, OsString},
-    fs::File,
-    fmt::Write,
-    process::Command,
-    time::Duration,
-    env,
-    ptr,
+    env, ffi::{c_char, CStr, CString, OsString}, fmt::Write, fs::File, process::Command, ptr, sync::{Arc, Mutex}, time::Duration
 };
 
 macro_rules! not_implemented {
@@ -38,7 +32,26 @@ macro_rules! not_implemented {
     }};
 }
 
-struct CrustCallbacks;
+struct CrustCallbacks {
+    outfile: syn::File,
+}
+
+unsafe impl Send for CrustCallbacks {}
+unsafe impl Sync for CrustCallbacks {}
+
+impl CrustCallbacks {
+    fn new() -> Self {
+        Self  {
+            outfile: syn::File {
+                shebang: None,
+                items: vec![],
+                attrs: vec![
+                    syn::parse_quote! { #![no_std] },
+                ],
+            }
+        }
+    }
+}
 
 impl Callbacks for CrustCallbacks {
     fn after_expansion<'tcx>(
@@ -154,6 +167,9 @@ fn main() {
         return;
     };
 
+    let mut cbs = CrustCallbacks::new();
+    println!("Attrs: {:#?}", cbs.outfile.attrs);
+
     run_compiler(
         &[
             "ignored".to_string(),
@@ -161,8 +177,9 @@ fn main() {
             "--extern=libc=target/debug/deps/liblibc-10ee459ca4890310.rlib".to_string(), // WARN: hardcoded path to libc in our own deps is whack
             file,
         ],
-        &mut CrustCallbacks,
+        &mut cbs,
     );
+
 }
 
 fn main2() {

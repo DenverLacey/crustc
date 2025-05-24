@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+syn = { version = "2.0.101", features = ["full", "printing", "extra-traits"] }
 annotate-snippets = "0.11.5"
 libc = { path = "libs/libc" }
 
