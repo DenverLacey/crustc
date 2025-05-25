@@ -19,8 +19,10 @@ use rustc_interface::interface;
 use rustc_hir::intravisit::{self, Visitor};
 use rustc_middle::ty::TyCtxt;
 use std::{
-    env, ffi::{c_char, CStr, CString, OsString}, fmt::Write, fs::File, process::Command, ptr, sync::{Arc, Mutex}, time::Duration
+    collections::HashMap, env, ffi::{c_char, CStr, CString, OsString}, fmt::Write, fs::File, process::Command, ptr, sync::{Arc, Mutex}, time::Duration
 };
+
+use syn::{self, Token};
 
 macro_rules! not_implemented {
     () => {{
@@ -32,14 +34,15 @@ macro_rules! not_implemented {
     }};
 }
 
-struct CrustCallbacks {
+struct CrustCompiler {
     outfile: syn::File,
+    parsed_infos: HashMap<rustc_span::Span, rustc_ast::Item>,
 }
 
-unsafe impl Send for CrustCallbacks {}
-unsafe impl Sync for CrustCallbacks {}
+unsafe impl Send for CrustCompiler {}
+unsafe impl Sync for CrustCompiler {}
 
-impl CrustCallbacks {
+impl CrustCompiler {
     fn new() -> Self {
         Self  {
             outfile: syn::File {
@@ -48,12 +51,29 @@ impl CrustCallbacks {
                 attrs: vec![
                     syn::parse_quote! { #![no_std] },
                 ],
-            }
+            },
+            parsed_infos: HashMap::new(),
         }
     }
 }
 
-impl Callbacks for CrustCallbacks {
+impl Callbacks for CrustCompiler {
+    fn after_crate_root_parsing(
+        &mut self,
+        compiler: &interface::Compiler,
+        krate: &mut rustc_ast::Crate
+    ) -> rustc_driver::Compilation {
+        use rustc_ast::ItemKind;
+        for item in &krate.items {
+            if let ItemKind::Fn(f) = &item.kind {
+                let ident = f.ident.name.to_ident_string();
+                println!("[{:?}] {}", item.span, ident);
+                self.parsed_infos.insert(item.span, (**item).clone());
+            }
+        }
+        rustc_driver::Compilation::Continue
+    }
+
     fn after_expansion<'tcx>(
         &mut self,
         compiler: &interface::Compiler,
@@ -61,32 +81,63 @@ impl Callbacks for CrustCallbacks {
     ) -> rustc_driver::Compilation {
         for item_id in tcx.hir_free_items() {
             let item = &tcx.hir_item(item_id);
-            compile_item(&item.kind);
+            if let Some(item) = self.parsed_infos.get(&item.span) {
+                println!("We found {:?} at {:?}", item, item.span);
+            } else {
+                println!("We didn't find item at {:?}", item.span);
+            }
+            self.compile_item(item.span, &item.kind);
         }
 
         rustc_driver::Compilation::Stop
     }
 }
 
-fn compile_item<'hir>(item: &rustc_hir::ItemKind<'hir>) {
-    use rustc_hir::ItemKind as IK;
-    match item {
-        IK::ExternCrate(_sym, _id) => not_implemented!("ExternCrate"),
-        IK::Use(_path, _kind) => not_implemented!("Use"),
-        IK::Static(_id, _ty, _mut, _body_id) => not_implemented!("Static"),
-        IK::Const(_id, _ty, _generics, _body_id) => not_implemented!("Const"),
-        IK::Fn { ident: _, sig, generics: _, body: _, has_body: _ } => not_implemented!("Fn"),
-        IK::Macro(_id, _def, _kind) => not_implemented!("Macro"),
-        IK::Mod(_id, _mod) => not_implemented!("Mod"),
-        IK::ForeignMod { abi: _, items: _ } => not_implemented!("ForeignMod "),
-        IK::GlobalAsm { asm: _, fake_body: _ } => not_implemented!("GlobalAsm "),
-        IK::TyAlias(_id, _ty, _generics) => not_implemented!("TyAlias"),
-        IK::Enum(_id, _def, _generics) => not_implemented!("Enum"),
-        IK::Struct(_id, _var, _generics) => not_implemented!("Struct"),
-        IK::Union(_id, _var, _generics) => not_implemented!("Union"),
-        IK::Trait(_is_auto, _safety, _id, _generics, _generic_bounds, _item_refs) => not_implemented!("Trait"),
-        IK::TraitAlias(_id, _generics, _generic_bounds) => not_implemented!("TraitAlias"),
-        IK::Impl(_impl) => not_implemented!("Impl"),
+impl CrustCompiler {
+    fn compile_item<'hir>(&mut self, span: rustc_span::Span, item: &rustc_hir::ItemKind<'hir>) {
+        let Some(parsed_info) = self.parsed_infos.get(&span) else {
+            return;
+        };
+
+        use rustc_hir::ItemKind as IK;
+        match item {
+            IK::ExternCrate(_sym, _id) => not_implemented!("ExternCrate"),
+            IK::Use(_path, _kind) => not_implemented!("Use"),
+            IK::Static(id, _ty, _mut, _body_id) => {
+                let vis = syn::Visibility::Public(<Token![pub]>::default());
+                let mutability = if matches!(_mut, rustc_hir::Mutability::Mut) {
+                    syn::StaticMutability::Mut(<Token![mut]>::default())
+                } else {
+                    syn::StaticMutability::None
+                };
+               let ident = syn::Ident::new(id.name.as_str(), proc_macro2::Span::call_site());
+                todo!()
+            }
+            IK::Const(_id, _ty, _generics, _body_id) => not_implemented!("Const"),
+            IK::Fn { ident: _, sig, generics: _, body: _, has_body: _ } => not_implemented!("Fn"),
+            IK::Macro(_id, _def, _kind) => not_implemented!("Macro"),
+            IK::Mod(_id, _mod) => not_implemented!("Mod"),
+            IK::ForeignMod { abi: _, items: _ } => not_implemented!("ForeignMod "),
+            IK::GlobalAsm { asm: _, fake_body: _ } => not_implemented!("GlobalAsm "),
+            IK::TyAlias(_id, _ty, _generics) => not_implemented!("TyAlias"),
+            IK::Enum(_id, _def, _generics) => not_implemented!("Enum"),
+            IK::Struct(_id, _var, _generics) => not_implemented!("Struct"),
+            IK::Union(_id, _var, _generics) => not_implemented!("Union"),
+            IK::Trait(_is_auto, _safety, _id, _generics, _generic_bounds, _item_refs) => not_implemented!("Trait"),
+            IK::TraitAlias(_id, _generics, _generic_bounds) => not_implemented!("TraitAlias"),
+            IK::Impl(_impl) => not_implemented!("Impl"),
+        }
+    }
+
+    fn compile_fn<'hir>(
+        &mut self,
+        ident: rustc_span::Ident,
+        sig: rustc_hir::FnSig<'hir>,
+        generics: &'hir rustc_hir::Generics<'hir>,
+        body: rustc_hir::BodyId,
+        has_body: bool,
+    ) {
+
     }
 }
 
@@ -167,7 +218,7 @@ fn main() {
         return;
     };
 
-    let mut cbs = CrustCallbacks::new();
+    let mut cbs = CrustCompiler::new();
     println!("Attrs: {:#?}", cbs.outfile.attrs);
 
     run_compiler(
