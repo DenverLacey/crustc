@@ -18,4 +18,39 @@ A transpiler from 'Crust' to Rust source code written in the Crust style as spec
 
 > "*These rules may change. The goal is to make programming in Rust fun.*" - Tsoding
 
+# 'Crust' Syntax
+
+Part of this project is coming up with a syntax for 'Crust' which is really just a style of writting Rust code. 
+'Crust' tries to be as close to Rust as possible, with main differences being between safety, visibility, and ergonomics of pointers.
+
+For example, the following 'Crust code.
+
+```rust
+use libc::printf;
+
+struct Foo {
+    i: i32,
+    f: f32,
+}
+
+fn print_foo(foo: *const Foo) {
+    printf!("(%d, %f)\n", foo.i, foo.f);
+}
+```
+
+Would be transpiled to the following Rust code.
+
+```rust
+use libc::printf;
+
+#[derive(Clone, Copy)]
+pub struct Foo {
+    pub i: i32,
+    pub f: f32,
+}
+
+pub unsafe fn print_foo(foo: *const Foo) {
+    printf!(c"(%d, %f)\n".as_ptr(), (*foo).i, (*foo).f);
+}
+```
 
