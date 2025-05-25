@@ -19,7 +19,7 @@ use rustc_interface::interface;
 use rustc_hir::intravisit::{self, Visitor};
 use rustc_middle::ty::TyCtxt;
 use std::{
-    collections::HashMap, env, ffi::{c_char, CStr, CString, OsString}, fmt::Write, fs::File, process::Command, ptr, sync::{Arc, Mutex}, time::Duration
+    collections::HashMap, default, env, ffi::{c_char, CStr, CString, OsString}, fmt::Write, fs::File, process::Command, ptr, sync::{Arc, Mutex}, time::Duration
 };
 
 use syn::{self, Token};
@@ -86,7 +86,7 @@ impl Callbacks for CrustCompiler {
             } else {
                 println!("We didn't find item at {:?}", item.span);
             }
-            self.compile_item(item.span, &item.kind);
+            self.compile_item(tcx, item.span, &item.kind);
         }
 
         rustc_driver::Compilation::Stop
@@ -94,7 +94,7 @@ impl Callbacks for CrustCompiler {
 }
 
 impl CrustCompiler {
-    fn compile_item<'hir>(&mut self, span: rustc_span::Span, item: &rustc_hir::ItemKind<'hir>) {
+    fn compile_item<'tcx, 'hir>(&mut self, tcx: TyCtxt<'tcx>, span: rustc_span::Span, item: &rustc_hir::ItemKind<'hir>) {
         let Some(parsed_info) = self.parsed_infos.get(&span) else {
             return;
         };
@@ -103,22 +103,36 @@ impl CrustCompiler {
         match item {
             IK::ExternCrate(_sym, _id) => not_implemented!("ExternCrate"),
             IK::Use(_path, _kind) => not_implemented!("Use"),
-            IK::Static(id, _ty, _mut, _body_id) => {
-                let vis = syn::Visibility::Public(<Token![pub]>::default());
-                let mutability = if matches!(_mut, rustc_hir::Mutability::Mut) {
-                    syn::StaticMutability::Mut(<Token![mut]>::default())
-                } else {
-                    syn::StaticMutability::None
-                };
-               let ident = syn::Ident::new(id.name.as_str(), proc_macro2::Span::call_site());
-                todo!()
+            IK::Static(id, ty, _mut, body_id) => {
+                let attrs = self.compile_attrs(&parsed_info.attrs);
+                let vis = self.compile_vis(&parsed_info.vis);
+                let mutability = self.compile_mutability(*_mut);
+                let ident = syn::Ident::new(id.name.as_str(), proc_macro2::Span::call_site());
+                let ty = self.compile_type(ty);
+
+                let body = tcx.hir_body(*body_id);
+                assert!(body.params.len() == 0);
+                let expr = self.compile_expr(body.value);
+
+                self.outfile.items.push(syn::Item::Static(syn::ItemStatic {
+                    attrs,
+                    vis,
+                    static_token: <syn::Token![static]>::default(),
+                    mutability,
+                    ident,
+                    colon_token: <syn::Token![:]>::default(),
+                    ty: Box::new(ty),
+                    eq_token: <syn::Token![=]>::default(),
+                    expr: Box::new(expr),
+                    semi_token: <syn::Token![;]>::default(),
+                }));
             }
             IK::Const(_id, _ty, _generics, _body_id) => not_implemented!("Const"),
             IK::Fn { ident: _, sig, generics: _, body: _, has_body: _ } => not_implemented!("Fn"),
             IK::Macro(_id, _def, _kind) => not_implemented!("Macro"),
             IK::Mod(_id, _mod) => not_implemented!("Mod"),
-            IK::ForeignMod { abi: _, items: _ } => not_implemented!("ForeignMod "),
-            IK::GlobalAsm { asm: _, fake_body: _ } => not_implemented!("GlobalAsm "),
+            IK::ForeignMod { abi: _, items: _ } => not_implemented!("ForeignMod"),
+            IK::GlobalAsm { asm: _, fake_body: _ } => not_implemented!("GlobalAsm"),
             IK::TyAlias(_id, _ty, _generics) => not_implemented!("TyAlias"),
             IK::Enum(_id, _def, _generics) => not_implemented!("Enum"),
             IK::Struct(_id, _var, _generics) => not_implemented!("Struct"),
@@ -129,15 +143,33 @@ impl CrustCompiler {
         }
     }
 
-    fn compile_fn<'hir>(
-        &mut self,
-        ident: rustc_span::Ident,
-        sig: rustc_hir::FnSig<'hir>,
-        generics: &'hir rustc_hir::Generics<'hir>,
-        body: rustc_hir::BodyId,
-        has_body: bool,
-    ) {
+    fn compile_attrs(&self, attrs: &rustc_ast::AttrVec) -> Vec<syn::Attribute> {
+        todo!()
+    }
 
+    fn compile_vis(&self, vis: &rustc_ast::Visibility) -> syn::Visibility {
+        use rustc_ast::VisibilityKind as VK;
+        match &vis.kind {
+            VK::Public => syn::Visibility::Public(<syn::Token![pub]>::default()),
+            VK::Restricted { path: _, id: _, shorthand: _ }  => todo!(),
+            VK::Inherited => syn::Visibility::Public(<syn::Token![pub]>::default()),
+        }
+    }
+
+    fn compile_mutability(&self, mutbl: rustc_hir::Mutability) -> syn::StaticMutability {
+        if matches!(mutbl, rustc_hir::Mutability::Mut) {
+            syn::StaticMutability::Mut(<Token![mut]>::default())
+        } else {
+            syn::StaticMutability::None
+        }
+    }
+
+    fn compile_type<'hir>(&self, ty: &'hir rustc_hir::Ty<'hir>) -> syn::Type {
+        todo!()
+    }
+
+    fn compile_expr<'hir>(&self, expr: &'hir rustc_hir::Expr<'hir>) -> syn::Expr {
+        todo!()
     }
 }
 
