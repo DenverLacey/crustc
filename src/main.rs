@@ -107,7 +107,7 @@ impl CrustCompiler {
                 let attrs = self.compile_attrs(&parsed_info.attrs);
                 let vis = self.compile_vis(&parsed_info.vis);
                 let mutability = self.compile_mutability(*_mut);
-                let ident = syn::Ident::new(id.name.as_str(), proc_macro2::Span::call_site());
+                let ident = self.compile_ident(id);
                 let ty = self.compile_type(ty);
 
                 let body = tcx.hir_body(*body_id);
@@ -127,8 +127,31 @@ impl CrustCompiler {
                     semi_token: <syn::Token![;]>::default(),
                 }));
             }
-            IK::Const(_id, _ty, _generics, _body_id) => not_implemented!("Const"),
-            IK::Fn { ident: _, sig, generics: _, body: _, has_body: _ } => not_implemented!("Fn"),
+            IK::Const(id, ty, generics, body_id) => {
+                let attrs = self.compile_attrs(&parsed_info.attrs);
+                let vis = self.compile_vis(&parsed_info.vis);
+                let ident = self.compile_ident(id);
+                let generics = self.compile_generics(generics);
+                let ty = self.compile_type(ty);
+
+                let body = tcx.hir_body(*body_id);
+                assert!(body.params.len() == 0);
+                let expr = self.compile_expr(body.value);
+
+                self.outfile.items.push(syn::Item::Const(syn::ItemConst {
+                    attrs,
+                    vis,
+                    const_token: <syn::Token![const]>::default(),
+                    ident,
+                    generics,
+                    colon_token: <syn::Token![:]>::default(),
+                    ty: Box::new(ty),
+                    eq_token: <syn::Token![=]>::default(),
+                    expr: Box::new(expr),
+                    semi_token: <syn::Token![;]>::default(),
+                }));
+            }
+            IK::Fn { ident: _, sig: _, generics: _, body: _, has_body: _ } => not_implemented!("Fn"),
             IK::Macro(_id, _def, _kind) => not_implemented!("Macro"),
             IK::Mod(_id, _mod) => not_implemented!("Mod"),
             IK::ForeignMod { abi: _, items: _ } => not_implemented!("ForeignMod"),
@@ -141,6 +164,11 @@ impl CrustCompiler {
             IK::TraitAlias(_id, _generics, _generic_bounds) => not_implemented!("TraitAlias"),
             IK::Impl(_impl) => not_implemented!("Impl"),
         }
+    }
+
+    fn compile_ident(&self, ident: &rustc_span::Ident) -> syn::Ident {
+        let id_str = Box::leak(ident.name.to_ident_string().into_boxed_str());
+        syn::Ident::new(id_str, proc_macro2::Span::call_site())
     }
 
     fn compile_attrs(&self, attrs: &rustc_ast::AttrVec) -> Vec<syn::Attribute> {
@@ -165,6 +193,10 @@ impl CrustCompiler {
     }
 
     fn compile_type<'hir>(&self, ty: &'hir rustc_hir::Ty<'hir>) -> syn::Type {
+        todo!()
+    }
+
+    fn compile_generics<'hir>(&self, generics: &'hir rustc_hir::Generics<'hir>) -> syn::Generics {
         todo!()
     }
 
