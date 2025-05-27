@@ -1,6 +1,7 @@
 #![allow(unused)]
 #![feature(rustc_private)]
 
+extern crate rustc_abi;
 extern crate rustc_ast;
 extern crate rustc_ast_pretty;
 extern crate rustc_data_structures;
@@ -14,15 +15,16 @@ extern crate rustc_middle;
 extern crate rustc_session;
 extern crate rustc_span;
 
+use quote::ToTokens;
 use rustc_driver::{Callbacks, run_compiler};
 use rustc_interface::interface;
 use rustc_hir::intravisit::{self, Visitor};
 use rustc_middle::ty::TyCtxt;
 use std::{
-    collections::HashMap, default, env, ffi::{c_char, CStr, CString, OsString}, fmt::Write, fs::File, process::Command, ptr, sync::{Arc, Mutex}, time::Duration
+    collections::HashMap, default, env, ffi::{c_char, CStr, CString, OsString}, io::Write, fs::File, path::Path, process::Command, ptr, str::FromStr, sync::{Arc, Mutex}, time::Duration
 };
 
-use syn::{self, Token};
+use syn::{self, token::Default, Token};
 
 macro_rules! not_implemented {
     () => {{
@@ -32,6 +34,10 @@ macro_rules! not_implemented {
         print!("{}:{}: TODO: ", file!(), line!());
         println!($fmt $($args)?);
     }};
+    ($default:expr, $fmt:literal $($args:tt)?) => {{
+        not_implemented!($fmt $($args)?);
+        $default
+    }}
 }
 
 struct CrustCompiler {
@@ -67,7 +73,6 @@ impl Callbacks for CrustCompiler {
         for item in &krate.items {
             if let ItemKind::Fn(f) = &item.kind {
                 let ident = f.ident.name.to_ident_string();
-                println!("[{:?}] {}", item.span, ident);
                 self.parsed_infos.insert(item.span, (**item).clone());
             }
         }
@@ -81,11 +86,6 @@ impl Callbacks for CrustCompiler {
     ) -> rustc_driver::Compilation {
         for item_id in tcx.hir_free_items() {
             let item = &tcx.hir_item(item_id);
-            if let Some(item) = self.parsed_infos.get(&item.span) {
-                println!("We found {:?} at {:?}", item, item.span);
-            } else {
-                println!("We didn't find item at {:?}", item.span);
-            }
             self.compile_item(tcx, item.span, &item.kind);
         }
 
@@ -151,7 +151,78 @@ impl CrustCompiler {
                     semi_token: <syn::Token![;]>::default(),
                 }));
             }
-            IK::Fn { ident: _, sig: _, generics: _, body: _, has_body: _ } => not_implemented!("Fn"),
+            IK::Fn { ident, sig, generics, body, has_body } => {
+                let attrs = self.compile_attrs(&parsed_info.attrs);
+                let vis = self.compile_vis(&parsed_info.vis);
+                let ident = self.compile_ident(ident);
+                let constness = if sig.header.is_const() { Some(<syn::Token![const]>::default()) } else { None };
+                let asyncness = if sig.header.is_async() { Some(<syn::Token![async]>::default()) } else { None };
+                let abi = match sig.header.abi {
+                    rustc_abi::ExternAbi::Rust => None,
+                    abi => Some(syn::Abi {
+                        extern_token: <syn::Token![extern]>::default(),
+                        name: Some(Self::to_lit_str(abi.as_str())),
+                    }),
+                };
+                let generics = self.compile_generics(generics);
+
+                let rustc_ast::ItemKind::Fn(fn_info) = &parsed_info.kind else {
+                    eprintln!("{}:{}: Error: parsed_info was not a Fn", file!(), line!());
+                    return;
+                };
+
+                // TODO: Acually handle all the things
+                let inputs: syn::punctuated::Punctuated<_, syn::Token![,]> = fn_info.sig.decl.inputs.iter().map(|param| {
+                    syn::FnArg::Typed(syn::PatType {
+                        attrs: vec![],
+                        pat: Box::new(syn::Pat::Path(syn::PatPath {
+                            attrs: vec![],
+                            qself: None,
+                            path: syn::Path {
+                                leading_colon: None,
+                                segments: {
+                                    let mut segs = syn::punctuated::Punctuated::new();
+                                    segs.push(syn::PathSegment {
+                                        ident: syn::Ident::new("arg", proc_macro2::Span::call_site()),
+                                        arguments: syn::PathArguments::None,
+                                    });
+                                    segs
+                                },
+                            },
+                        })),
+                        colon_token: <syn::Token![:]>::default(),
+                        ty: Box::new(syn::Type::Never(syn::TypeNever {
+                            bang_token: <syn::Token![!]>::default(),
+                        })),
+                    })
+                }).collect();
+
+                let output = not_implemented!(syn::ReturnType::Default, "compiling output of function decls not implemented");
+                let variadic = not_implemented!(None, "compiling C variadic argument not implemented");
+                let block = Box::new(syn::Block {
+                    brace_token: syn::token::Brace::default(),
+                    stmts: vec![],
+                });
+
+                self.outfile.items.push(syn::Item::Fn(syn::ItemFn {
+                    attrs,
+                    vis,
+                    sig: syn::Signature {
+                        constness,
+                        asyncness,
+                        unsafety: Some(<syn::Token![unsafe]>::default()),
+                        abi,
+                        fn_token: <syn::Token![fn]>::default(),
+                        ident,
+                        generics,
+                        paren_token: syn::token::Paren::default(),
+                        inputs,
+                        variadic,
+                        output,
+                    },
+                    block,
+                }));
+            }
             IK::Macro(_id, _def, _kind) => not_implemented!("Macro"),
             IK::Mod(_id, _mod) => not_implemented!("Mod"),
             IK::ForeignMod { abi: _, items: _ } => not_implemented!("ForeignMod"),
@@ -172,7 +243,7 @@ impl CrustCompiler {
     }
 
     fn compile_attrs(&self, attrs: &rustc_ast::AttrVec) -> Vec<syn::Attribute> {
-        todo!()
+        not_implemented!(vec![], "compile_attrs() not implemented")
     }
 
     fn compile_vis(&self, vis: &rustc_ast::Visibility) -> syn::Visibility {
@@ -193,15 +264,24 @@ impl CrustCompiler {
     }
 
     fn compile_type<'hir>(&self, ty: &'hir rustc_hir::Ty<'hir>) -> syn::Type {
-        todo!()
+        not_implemented!(syn::Type::Never(syn::TypeNever { bang_token: <syn::Token![!]>::default() }), "compile_type() not implemented")
     }
 
     fn compile_generics<'hir>(&self, generics: &'hir rustc_hir::Generics<'hir>) -> syn::Generics {
-        todo!()
+        not_implemented!(syn::Generics::default(), "compile_generics() not implemented")
     }
 
     fn compile_expr<'hir>(&self, expr: &'hir rustc_hir::Expr<'hir>) -> syn::Expr {
-        todo!()
+        not_implemented!(syn::Expr::Tuple(syn::ExprTuple {
+            attrs: vec![],
+            paren_token: syn::token::Paren::default(),
+            elems: syn::punctuated::Punctuated::new(),
+        }), "compile_expr() not implemented")
+    }
+
+    fn to_lit_str(s: impl AsRef<str>) -> syn::LitStr {
+        let s = Box::leak(s.as_ref().to_owned().into_boxed_str());
+        syn::LitStr::new(s, proc_macro2::Span::call_site())
     }
 }
 
@@ -282,19 +362,29 @@ fn main() {
         return;
     };
 
-    let mut cbs = CrustCompiler::new();
-    println!("Attrs: {:#?}", cbs.outfile.attrs);
+    let mut compiler = CrustCompiler::new();
+    println!("Attrs: {:#?}", compiler.outfile.attrs);
 
     run_compiler(
         &[
             "ignored".to_string(),
             "--edition=2021".to_string(),
             "--extern=libc=target/debug/deps/liblibc-10ee459ca4890310.rlib".to_string(), // WARN: hardcoded path to libc in our own deps is whack
-            file,
+            file.clone(),
         ],
-        &mut cbs,
+        &mut compiler,
     );
 
+    let file_tokens = compiler.outfile.into_token_stream();
+
+    let generated_filepath = format!("{}.generated.rs", file);
+    let mut out = File::create(&generated_filepath).unwrap();
+    write!(out, "{file_tokens}");
+
+    Command::new("rustfmt")
+        .args([OsString::from(generated_filepath)])
+        .output()
+        .expect("Error: Failed to format code.");
 }
 
 fn main2() {
