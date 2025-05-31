@@ -108,11 +108,11 @@ impl CrustCompiler {
                 let vis = self.compile_vis(&parsed_info.vis);
                 let mutability = self.compile_mutability(*_mut);
                 let ident = self.compile_ident(id);
-                let ty = self.compile_type(ty);
+                let ty = self.compile_type_hir(ty);
 
                 let body = tcx.hir_body(*body_id);
                 assert!(body.params.len() == 0);
-                let expr = self.compile_expr(body.value);
+                let expr = self.compile_expr_hir(body.value);
 
                 self.outfile.items.push(syn::Item::Static(syn::ItemStatic {
                     attrs,
@@ -132,11 +132,11 @@ impl CrustCompiler {
                 let vis = self.compile_vis(&parsed_info.vis);
                 let ident = self.compile_ident(id);
                 let generics = self.compile_generics(generics);
-                let ty = self.compile_type(ty);
+                let ty = self.compile_type_hir(ty);
 
                 let body = tcx.hir_body(*body_id);
                 assert!(body.params.len() == 0);
-                let expr = self.compile_expr(body.value);
+                let expr = self.compile_expr_hir(body.value);
 
                 self.outfile.items.push(syn::Item::Const(syn::ItemConst {
                     attrs,
@@ -175,34 +175,22 @@ impl CrustCompiler {
                 let inputs: syn::punctuated::Punctuated<_, syn::Token![,]> = fn_info.sig.decl.inputs.iter().map(|param| {
                     syn::FnArg::Typed(syn::PatType {
                         attrs: vec![],
-                        pat: Box::new(syn::Pat::Path(syn::PatPath {
-                            attrs: vec![],
-                            qself: None,
-                            path: syn::Path {
-                                leading_colon: None,
-                                segments: {
-                                    let mut segs = syn::punctuated::Punctuated::new();
-                                    segs.push(syn::PathSegment {
-                                        ident: syn::Ident::new("arg", proc_macro2::Span::call_site()),
-                                        arguments: syn::PathArguments::None,
-                                    });
-                                    segs
-                                },
-                            },
-                        })),
+                        pat: Box::new(self.compile_pat(&param.pat)),
                         colon_token: <syn::Token![:]>::default(),
-                        ty: Box::new(syn::Type::Never(syn::TypeNever {
-                            bang_token: <syn::Token![!]>::default(),
-                        })),
+                        ty: Box::new(self.compile_type(&param.ty)),
                     })
                 }).collect();
 
                 let output = not_implemented!(syn::ReturnType::Default, "compiling output of function decls not implemented");
                 let variadic = not_implemented!(None, "compiling C variadic argument not implemented");
-                let block = Box::new(syn::Block {
-                    brace_token: syn::token::Brace::default(),
-                    stmts: vec![],
-                });
+
+                assert!(has_body, "Function decls without bodies not implemented");
+                let body = tcx.hir_body(*body);
+                let rustc_hir::ExprKind::Block(block, _) = &body.value.kind else {
+                    eprintln!("Error: Function body is not a block.");
+                    return;
+                };
+                let block = self.compile_block(block);
 
                 self.outfile.items.push(syn::Item::Fn(syn::ItemFn {
                     attrs,
@@ -220,7 +208,7 @@ impl CrustCompiler {
                         variadic,
                         output,
                     },
-                    block,
+                    block: Box::new(block),
                 }));
             }
             IK::Macro(_id, _def, _kind) => not_implemented!("Macro"),
@@ -263,20 +251,208 @@ impl CrustCompiler {
         }
     }
 
-    fn compile_type<'hir>(&self, ty: &'hir rustc_hir::Ty<'hir>) -> syn::Type {
+    fn compile_pat(&self, pat: &rustc_ast::Pat) -> syn::Pat {
+        use rustc_ast::PatKind as PK;
+        match &pat.kind {
+            PK::Missing => syn::Pat::Verbatim(proc_macro2::TokenStream::new()),
+            PK::Wild => syn::Pat::Wild(syn::PatWild {
+                attrs: not_implemented!(vec![], "attrs for Wild Pat in compile_pat() not implemented"),
+                underscore_token: <syn::Token![_]>::default(),
+            }),
+            PK::Ident(rustc_ast::BindingMode(_ref, _mut), id, pat) => {
+                let by_ref = if matches!(_ref, rustc_ast::ByRef::Yes(_)) {
+                    Some(<syn::Token![ref]>::default())
+                } else {
+                    None
+                };
+
+                let _mut = if matches!(_mut, rustc_ast::Mutability::Mut) {
+                    Some(<syn::Token![mut]>::default())
+                } else {
+                    None
+                };
+
+                let ident = self.compile_ident(id);
+
+                let subpat = if let Some(pat) = pat {
+                    Some((
+                        <syn::Token![@]>::default(),
+                        Box::new(self.compile_pat(pat)),
+                    ))
+                } else {
+                    None
+                };
+
+                syn::Pat::Ident(syn::PatIdent {
+                    attrs: not_implemented!(vec![], "attrs for Ident Pat in compile_pat() not implemented"),
+                    by_ref,
+                    mutability: _mut,
+                    ident,
+                    subpat,
+                })
+            }
+            PK::Struct(qself, path, fields, rest) => {
+                syn::Pat::Struct(syn::PatStruct {
+                    attrs: not_implemented!(vec![], "attrs for Struct Pat not implemented"),
+                    qself: if let Some(qself) = qself { Some(self.compile_qself(qself)) } else { None },
+                    path: self.compile_path(path),
+                    brace_token: syn::token::Brace::default(),
+                    fields: fields.iter().map(|field| self.compile_field_pat(field)).collect(),
+                    rest: match rest {
+                        rustc_ast::PatFieldsRest::Rest => Some(syn::PatRest { attrs: not_implemented!(vec![], "PatFieldsRest"), dot2_token: <syn::Token![..]>::default() }),
+                        rustc_ast::PatFieldsRest::Recovered(err) => err.raise_fatal(), // TODO: Is this what we want to do?
+                        rustc_ast::PatFieldsRest::None => None,
+                    },
+                })
+            }
+            PK::TupleStruct(qself, path, pats) => {
+                syn::Pat::TupleStruct(syn::PatTupleStruct {
+                    attrs: not_implemented!(vec![], "attrs for TupleStruct Pat not implemented"),
+                    qself: if let Some(qself) = qself { Some(self.compile_qself(qself)) } else { None },
+                    path: self.compile_path(path),
+                    paren_token: syn::token::Paren::default(),
+                    elems: pats.iter().map(|pat| self.compile_pat(pat)).collect(),
+                })
+            }
+            PK::Or(pats) => {
+                syn::Pat::Or(syn::PatOr {
+                    attrs: not_implemented!(vec![], "attrs for PatOr in compile_pat() not implemented"),
+                    leading_vert: None,
+                    cases: pats.iter().map(|pat| self.compile_pat(pat)).collect(),
+                })
+            }
+            PK::Path(qself, path) => {
+                syn::Pat::Path(syn::PatPath {
+                    attrs: not_implemented!(vec![], "attrs for PatPath in compile_pat() not implemented"),
+                    qself: if let Some(qself) = qself { Some(self.compile_qself(qself)) } else { None },
+                    path: self.compile_path(path),
+                })
+            }
+            PK::Tuple(pats) => {
+                syn::Pat::Tuple(syn::PatTuple {
+                    attrs: not_implemented!(vec![], "attrs for PatTuple in compile_pat() not implemented"),
+                    paren_token: syn::token::Paren::default(),
+                    elems: pats.iter().map(|pat| self.compile_pat(pat)).collect(),
+                })
+            }
+            PK::Box(pat) => todo!(),
+            PK::Deref(_pat) => todo!(),
+            PK::Ref(_pat, _mut) => todo!(),
+            PK::Expr(_expr) => todo!(),
+            PK::Range(start, end, rustc_span::source_map::Spanned { node: limits, .. }) => {
+                syn::Pat::Range(syn::PatRange {
+                    attrs: not_implemented!(vec![], "attrs for PatRange in compile_pat() not implemented"),
+                    start: if let Some(start) = start { Some(Box::new(self.compile_expr(start))) } else { None },
+                    limits: match limits {
+                        rustc_ast::RangeEnd::Included(_) => syn::RangeLimits::Closed(<syn::Token![..=]>::default()),
+                        rustc_ast::RangeEnd::Excluded => syn::RangeLimits::HalfOpen(<syn::Token![..]>::default()),
+                    },
+                    end: if let Some(end) = end { Some(Box::new(self.compile_expr(end))) } else { None },
+                })
+            }
+            PK::Slice(pats) => {
+                syn::Pat::Slice(syn::PatSlice {
+                    attrs: not_implemented!(vec![], "attrs for PatSlice in compile_pat() not implemented"),
+                    bracket_token: syn::token::Bracket::default(),
+                    elems: pats.iter().map(|pat| self.compile_pat(pat)).collect(),
+                })
+            }
+            PK::Rest => {
+                syn::Pat::Rest(syn::PatRest {
+                    attrs: not_implemented!(vec![], "attrs for PatRest in compile_pat() not implemented"),
+                    dot2_token: <syn::Token![..]>::default(),
+                })
+            }
+            PK::Never => todo!(),
+            PK::Guard(_pat, _expr) => todo!(),
+            PK::Paren(pat) => {
+                syn::Pat::Paren(syn::PatParen {
+                    attrs: not_implemented!(vec![], "attrs for PatParen in compile_pat() not implemented"),
+                    paren_token: syn::token::Paren::default(),
+                    pat: Box::new(self.compile_pat(pat)),
+                })
+            }
+            PK::MacCall(_call) => todo!(),
+            PK::Err(err) => err.raise_fatal(),
+        }
+    }
+
+    fn compile_path(&self, path: &rustc_ast::Path) -> syn::Path {
+        not_implemented!(syn::Path {
+            leading_colon: None,
+            segments: [
+                syn::PathSegment {
+                    ident: syn::Ident::new("x", proc_macro2::Span::call_site()),
+                    arguments: syn::PathArguments::None,
+                }
+            ].into_iter().collect(),
+        }, "compile_path() not implemented")
+    }
+
+    fn compile_field_pat(&self, pat: &rustc_ast::PatField) -> syn::FieldPat {
+        syn::FieldPat {
+            attrs: self.compile_attrs(&pat.attrs),
+            member: syn::Member::Named(self.compile_ident(&pat.ident)),
+            colon_token: not_implemented!(Some(<syn::Token![:]>::default()), "compiling `colon_token` for compile_field_pat() not implemented"),
+            pat: Box::new(self.compile_pat(&pat.pat)),
+        }
+    }
+
+    fn compile_type(&self, ty: &rustc_ast::Ty) -> syn::Type {
         not_implemented!(syn::Type::Never(syn::TypeNever { bang_token: <syn::Token![!]>::default() }), "compile_type() not implemented")
+    }
+
+    fn compile_type_hir<'hir>(&self, ty: &'hir rustc_hir::Ty<'hir>) -> syn::Type {
+        not_implemented!(syn::Type::Never(syn::TypeNever { bang_token: <syn::Token![!]>::default() }), "compile_type_hir() not implemented")
     }
 
     fn compile_generics<'hir>(&self, generics: &'hir rustc_hir::Generics<'hir>) -> syn::Generics {
         not_implemented!(syn::Generics::default(), "compile_generics() not implemented")
     }
 
-    fn compile_expr<'hir>(&self, expr: &'hir rustc_hir::Expr<'hir>) -> syn::Expr {
+    fn compile_expr(&self, expr: &rustc_ast::Expr) -> syn::Expr {
         not_implemented!(syn::Expr::Tuple(syn::ExprTuple {
             attrs: vec![],
             paren_token: syn::token::Paren::default(),
             elems: syn::punctuated::Punctuated::new(),
         }), "compile_expr() not implemented")
+    }
+
+    fn compile_expr_hir<'hir>(&self, expr: &'hir rustc_hir::Expr<'hir>) -> syn::Expr {
+        not_implemented!(syn::Expr::Tuple(syn::ExprTuple {
+            attrs: vec![],
+            paren_token: syn::token::Paren::default(),
+            elems: syn::punctuated::Punctuated::new(),
+        }), "compile_expr_hir() not implemented")
+    }
+
+    fn compile_stmt<'hir>(&self, stmt: &'hir rustc_hir::Stmt<'hir>) -> syn::Stmt {
+        not_implemented!(syn::Stmt::Expr(syn::Expr::Tuple(syn::ExprTuple {
+            attrs: vec![],
+            paren_token: syn::token::Paren::default(),
+            elems: syn::punctuated::Punctuated::new()
+        }), None), "compile_stmt() not implemented")
+    }
+
+    fn compile_block<'hir>(&self, block: &'hir rustc_hir::Block<'hir>) -> syn::Block {
+        let mut stmts: Vec<_> = block.stmts.iter().map(|stmt| self.compile_stmt(stmt)).collect();
+
+        if let Some(expr) = block.expr {
+            let expr = self.compile_expr_hir(expr);
+            stmts.push(syn::Stmt::Expr(expr, None));
+        }
+
+        syn::Block { brace_token: syn::token::Brace::default(), stmts }
+    }
+
+    fn compile_qself(&self, qself: &rustc_ast::QSelf) -> syn::QSelf {
+        syn::QSelf {
+            lt_token: <syn::Token![<]>::default(),
+            ty: Box::new(self.compile_type(&qself.ty)),
+            position: qself.position,
+            as_token: not_implemented!(None, "compiling as_token for QSelf not implemented"),
+            gt_token: <syn::Token![>]>::default(),
+        }
     }
 
     fn to_lit_str(s: impl AsRef<str>) -> syn::LitStr {
@@ -332,27 +508,6 @@ unsafe fn report_error_reference_type() {
     libc::printf!(c"UNIMPLEMENTED report_error_reference_type\n");
 }
 
-fn start(args: &[&str]) {
-    if args.len() <= 1 {
-        report_error_not_enough_args(args);
-        return;
-    }
-
-    let source_path = args[1];
-
-    let Ok(source) = std::fs::read_to_string(source_path) else {
-        report_error_failed_to_open_source_file(args);
-        return;
-    };
-
-    println!("=== Source =========================================");
-    println!("{}\n", source);
-
-    println!("=== Analysis =======================================\n");
-
-    println!("=== Code Generation ================================\n");
-}
-
 fn main() {
     let Some(file) = env::args().nth(1) else {
         let args = Box::leak(env::args()
@@ -363,7 +518,6 @@ fn main() {
     };
 
     let mut compiler = CrustCompiler::new();
-    println!("Attrs: {:#?}", compiler.outfile.attrs);
 
     run_compiler(
         &[
@@ -385,13 +539,5 @@ fn main() {
         .args([OsString::from(generated_filepath)])
         .output()
         .expect("Error: Failed to format code.");
-}
-
-fn main2() {
-    let args = Box::leak(env::args()
-        .map(|a| Box::leak(a.into_boxed_str()) as &_)
-        .collect::<Vec<_>>()
-        .into_boxed_slice());
-    start(args);
 }
 
