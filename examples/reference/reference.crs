@@ -1,0 +1,5 @@
+fn foo(n: &i32) {}
+fn foo_mut(n: &mut i32) {}
+fn foo_lt<'a>(m: &'a i32) {}
+fn foo_lt_mut<'a>(m: &'a mut i32) {}
+

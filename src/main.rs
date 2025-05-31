@@ -15,7 +15,7 @@ extern crate rustc_middle;
 extern crate rustc_session;
 extern crate rustc_span;
 
-use quote::ToTokens;
+use quote::{ToTokens, quote};
 use rustc_driver::{Callbacks, run_compiler};
 use rustc_interface::interface;
 use rustc_hir::intravisit::{self, Visitor};
@@ -41,6 +41,8 @@ macro_rules! not_implemented {
 }
 
 struct CrustCompiler {
+    source: String,
+    source_filename: String,
     outfile: syn::File,
     parsed_infos: HashMap<rustc_span::Span, rustc_ast::Item>,
 }
@@ -48,9 +50,14 @@ struct CrustCompiler {
 unsafe impl Send for CrustCompiler {}
 unsafe impl Sync for CrustCompiler {}
 
+struct FailedToOpenSourceFile;
+
 impl CrustCompiler {
-    fn new() -> Self {
-        Self  {
+    fn new(filename: impl Into<String>) -> Result<Self, FailedToOpenSourceFile> {
+        let filename = filename.into();
+        Ok(Self  {
+            source: std::fs::read_to_string(&filename).or(Err(FailedToOpenSourceFile))?,
+            source_filename: filename,
             outfile: syn::File {
                 shebang: None,
                 items: vec![],
@@ -59,7 +66,7 @@ impl CrustCompiler {
                 ],
             },
             parsed_infos: HashMap::new(),
-        }
+        })
     }
 }
 
@@ -102,7 +109,10 @@ impl CrustCompiler {
         use rustc_hir::ItemKind as IK;
         match item {
             IK::ExternCrate(_sym, _id) => not_implemented!("ExternCrate"),
-            IK::Use(_path, _kind) => not_implemented!("Use"),
+            IK::Use(path, _kind) => {
+                let path = self.compile_path_hir(path);
+                not_implemented!("Use");
+            }
             IK::Static(id, ty, _mut, body_id) => {
                 let attrs = self.compile_attrs(&parsed_info.attrs);
                 let vis = self.compile_vis(&parsed_info.vis);
@@ -181,8 +191,21 @@ impl CrustCompiler {
                     })
                 }).collect();
 
-                let output = not_implemented!(syn::ReturnType::Default, "compiling output of function decls not implemented");
-                let variadic = not_implemented!(None, "compiling C variadic argument not implemented");
+                let output = match &fn_info.sig.decl.output {
+                    rustc_ast::FnRetTy::Default(_) => syn::ReturnType::Default,
+                    rustc_ast::FnRetTy::Ty(ty) => syn::ReturnType::Type(<syn::Token![->]>::default(), Box::new(self.compile_type(ty))),
+                };
+
+                let variadic = if sig.decl.c_variadic {
+                    Some(syn::Variadic {
+                        attrs: not_implemented!(vec![], "attrs for variadics not implemented"),
+                        pat: None,
+                        dots: <syn::Token![...]>::default(),
+                        comma: None,
+                    })
+                } else {
+                    None
+                };
 
                 assert!(has_body, "Function decls without bodies not implemented");
                 let body = tcx.hir_body(*body);
@@ -378,15 +401,27 @@ impl CrustCompiler {
     }
 
     fn compile_path(&self, path: &rustc_ast::Path) -> syn::Path {
-        not_implemented!(syn::Path {
-            leading_colon: None,
-            segments: [
+        syn::Path {
+            leading_colon: not_implemented!(None, "leading_colon in compile_path_hir not implemented"),
+            segments: path.segments.iter().map(|seg| {
                 syn::PathSegment {
-                    ident: syn::Ident::new("x", proc_macro2::Span::call_site()),
-                    arguments: syn::PathArguments::None,
+                    ident: self.compile_ident(&seg.ident),
+                    arguments: not_implemented!(syn::PathArguments::None, "PathArguments in compile_path not implemented")
                 }
-            ].into_iter().collect(),
-        }, "compile_path() not implemented")
+            }).collect(),
+        }
+    }
+
+    fn compile_path_hir<'hir, R>(&self, path: &'hir rustc_hir::Path<'hir, R>) -> syn::Path {
+        syn::Path {
+            leading_colon: not_implemented!(None, "leading_colon in compile_path_hir not implemented"),
+            segments: path.segments.iter().map(|seg| {
+                syn::PathSegment {
+                    ident: self.compile_ident(&seg.ident),
+                    arguments: not_implemented!(syn::PathArguments::None, "PathArguments in compile_path_hir not implemented"),
+                }
+            }).collect(),
+        }
     }
 
     fn compile_field_pat(&self, pat: &rustc_ast::PatField) -> syn::FieldPat {
@@ -399,7 +434,83 @@ impl CrustCompiler {
     }
 
     fn compile_type(&self, ty: &rustc_ast::Ty) -> syn::Type {
-        not_implemented!(syn::Type::Never(syn::TypeNever { bang_token: <syn::Token![!]>::default() }), "compile_type() not implemented")
+        match &ty.kind {
+            rustc_ast::TyKind::Slice(ty) => syn::Type::Slice(syn::TypeSlice {
+                bracket_token: syn::token::Bracket::default(),
+                elem: Box::new(self.compile_type(ty)),
+            }),
+            rustc_ast::TyKind::Array(ty, _const) => syn::Type::Array(syn::TypeArray {
+                bracket_token: syn::token::Bracket::default(),
+                elem: Box::new(self.compile_type(ty)),
+                semi_token: <syn::Token![;]>::default(),
+                len: self.compile_expr(&_const.value),
+            }),
+            rustc_ast::TyKind::Ptr(mut_ty) => syn::Type::Ptr(syn::TypePtr {
+                star_token: <syn::Token![*]>::default(),
+                const_token: if matches!(mut_ty.mutbl, rustc_ast::Mutability::Not) { Some(<syn::Token![const]>::default()) } else { None },
+                mutability: if matches!(mut_ty.mutbl, rustc_ast::Mutability::Mut) { Some(<syn::Token![mut]>::default()) } else { None },
+                elem: Box::new(self.compile_type(&mut_ty.ty)),
+            }),
+            rustc_ast::TyKind::Ref(..) => {
+                self.report_reference_type(ty.span.data().lo.0 as usize..ty.span.data().hi.0 as usize);
+                syn::Type::Never(syn::TypeNever {
+                    bang_token: <syn::Token![!]>::default(),
+                })
+            }
+            rustc_ast::TyKind::PinnedRef(..) => todo!(),
+            rustc_ast::TyKind::BareFn(fn_type) => {
+                not_implemented!(syn::Type::BareFn(syn::TypeBareFn {
+                    lifetimes: None,
+                    unsafety: Some(<syn::Token![unsafe]>::default()),
+                    abi: None,
+                    fn_token: <syn::Token![fn]>::default(),
+                    paren_token: syn::token::Paren::default(),
+                    inputs: syn::punctuated::Punctuated::new(), // TODO: Factor out compiling params
+                    variadic: None,
+                    output: syn::ReturnType::Default, // TODO: Factor out compiling return type
+                }), "BareFn type's not implemented for compile_type()")
+            }
+            rustc_ast::TyKind::UnsafeBinder(_binder) => todo!(),
+            rustc_ast::TyKind::Never => syn::Type::Never(syn::TypeNever {
+                bang_token: <syn::Token![!]>::default(),
+            }),
+            rustc_ast::TyKind::Tup(types) => syn::Type::Tuple(syn::TypeTuple {
+                paren_token: syn::token::Paren::default(),
+                elems: types.iter().map(|ty| self.compile_type(ty)).collect(),
+            }),
+            rustc_ast::TyKind::Path(qself, path) => syn::Type::Path(syn::TypePath {
+                qself: if let Some(qself) = qself { Some(self.compile_qself(qself)) } else { None },
+                path: self.compile_path(path),
+            }),
+            rustc_ast::TyKind::TraitObject(_bounds, _syntax) => not_implemented!(syn::Type::TraitObject(syn::TypeTraitObject {
+                dyn_token: None,
+                bounds: syn::punctuated::Punctuated::new(),
+            }), "compiling trait object types not implemented in compile_type()"),
+            rustc_ast::TyKind::ImplTrait(_, _bounds) => not_implemented!(syn::Type::ImplTrait(syn::TypeImplTrait {
+                impl_token: <syn::Token![impl]>::default(),
+                bounds: syn::punctuated::Punctuated::new(),
+            }), "compiling impl trait types not implemented in compile_type()"),
+            rustc_ast::TyKind::Paren(ty) => syn::Type::Paren(syn::TypeParen {
+                paren_token: syn::token::Paren::default(),
+                elem: Box::new(self.compile_type(ty)),
+            }),
+            rustc_ast::TyKind::Typeof(_const) => not_implemented!(syn::Type::Never(syn::TypeNever {
+                bang_token: <syn::Token![!]>::default()
+            }), "compiling typeof types not implemented in compile_type()"),
+            rustc_ast::TyKind::Infer => syn::Type::Infer(syn::TypeInfer {
+                underscore_token: <syn::Token![_]>::default(),
+            }),
+            rustc_ast::TyKind::ImplicitSelf => not_implemented!(syn::Type::Never(syn::TypeNever {
+                bang_token: <syn::Token![!]>::default()
+            }), "compiling implicit self not implemented in compile_type()"),
+            rustc_ast::TyKind::MacCall(_call) => not_implemented!(syn::Type::Never(syn::TypeNever {
+                bang_token: <syn::Token![!]>::default()
+            }), "compiling mac calls not implemented in compile_type()"),
+            rustc_ast::TyKind::CVarArgs => syn::Type::Verbatim(quote!{ ... }.into_token_stream()),
+            rustc_ast::TyKind::Pat(_ty, _ty_pat) => todo!(),
+            rustc_ast::TyKind::Dummy => todo!(),
+            rustc_ast::TyKind::Err(err) => err.raise_fatal(),
+        }
     }
 
     fn compile_type_hir<'hir>(&self, ty: &'hir rustc_hir::Ty<'hir>) -> syn::Type {
@@ -461,6 +572,24 @@ impl CrustCompiler {
     }
 }
 
+impl CrustCompiler {
+    fn report_reference_type(&self, span: std::ops::Range<usize>) {
+        use annotate_snippets::{Level, Renderer, Snippet};
+
+        let message = Level::Error.title("reference type used").snippet(
+            Snippet::source(self.source.as_str())
+                .origin(self.source_filename.as_str())
+                .annotation(Level::Error
+                    .span(span.clone())
+                    .label("reference types are not allowed in crust"))
+        )
+        .footer(Level::Help.title("try using pointers"));
+
+        let renderer = Renderer::styled();
+        println!("{}", renderer.render(message));
+    }
+}
+
 fn report_error_not_enough_args(args: &[impl AsRef<str>]) {
     use annotate_snippets::{Level, Renderer, Snippet};
 
@@ -504,10 +633,6 @@ fn report_error_failed_to_open_source_file(args: &[impl AsRef<str>]) {
     println!("{}", renderer.render(message));
 }
 
-unsafe fn report_error_reference_type() {
-    libc::printf!(c"UNIMPLEMENTED report_error_reference_type\n");
-}
-
 fn main() {
     let Some(file) = env::args().nth(1) else {
         let args = Box::leak(env::args()
@@ -517,7 +642,13 @@ fn main() {
         return;
     };
 
-    let mut compiler = CrustCompiler::new();
+    let mut compiler = CrustCompiler::new(file.clone()).unwrap_or_else(|_| {
+        let args = Box::leak(env::args()
+            .collect::<Vec<_>>()
+            .into_boxed_slice());
+        report_error_failed_to_open_source_file(args);
+        std::process::exit(1);
+    });
 
     run_compiler(
         &[
