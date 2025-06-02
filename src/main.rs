@@ -122,7 +122,7 @@ impl CrustCompiler {
 
                 let body = tcx.hir_body(*body_id);
                 assert!(body.params.len() == 0);
-                let expr = self.compile_expr_hir(body.value);
+                let expr = self.compile_expr_hir(tcx, body.value);
 
                 self.outfile.items.push(syn::Item::Static(syn::ItemStatic {
                     attrs,
@@ -146,7 +146,7 @@ impl CrustCompiler {
 
                 let body = tcx.hir_body(*body_id);
                 assert!(body.params.len() == 0);
-                let expr = self.compile_expr_hir(body.value);
+                let expr = self.compile_expr_hir(tcx, body.value);
 
                 self.outfile.items.push(syn::Item::Const(syn::ItemConst {
                     attrs,
@@ -213,7 +213,7 @@ impl CrustCompiler {
                     eprintln!("Error: Function body is not a block.");
                     return;
                 };
-                let block = self.compile_block(block);
+                let block = self.compile_block(tcx, block);
 
                 self.outfile.items.push(syn::Item::Fn(syn::ItemFn {
                     attrs,
@@ -255,6 +255,10 @@ impl CrustCompiler {
 
     fn compile_attrs(&self, attrs: &rustc_ast::AttrVec) -> Vec<syn::Attribute> {
         not_implemented!(vec![], "compile_attrs() not implemented")
+    }
+
+    fn compile_attrs_hir<'a>(&self, attrs: impl IntoIterator<Item=&'a rustc_hir::Attribute>) -> Vec<syn::Attribute> {
+        not_implemented!(vec![], "compile_attrs_hir() not implemented")
     }
 
     fn compile_vis(&self, vis: &rustc_ast::Visibility) -> syn::Visibility {
@@ -529,12 +533,214 @@ impl CrustCompiler {
         }), "compile_expr() not implemented")
     }
 
-    fn compile_expr_hir<'hir>(&self, expr: &'hir rustc_hir::Expr<'hir>) -> syn::Expr {
-        not_implemented!(syn::Expr::Tuple(syn::ExprTuple {
-            attrs: vec![],
-            paren_token: syn::token::Paren::default(),
-            elems: syn::punctuated::Punctuated::new(),
-        }), "compile_expr_hir() not implemented")
+    fn compile_expr_hir<'tcx, 'hir>(&self, tcx: TyCtxt<'tcx>, expr: &'hir rustc_hir::Expr<'hir>) -> syn::Expr {
+        let attrs = self.compile_attrs_hir(tcx.hir_attrs(expr.hir_id));
+        match &expr.kind {
+            rustc_hir::ExprKind::ConstBlock(block) => {
+                let block = tcx.hir_body(block.body);
+                let rustc_hir::ExprKind::Block(block, _) = &block.value.kind else {
+                    eprintln!("Error: Function body is not a block.");
+                    todo!("error handling")
+                };
+                let mut _block = self.compile_block(tcx, block);
+                if let Some(expr) = block.expr {
+                    _block.stmts.push(syn::Stmt::Expr(self.compile_expr_hir(tcx, expr), None));
+                }
+                syn::Expr::Const(syn::ExprConst {
+                    attrs,
+                    const_token: <syn::Token![const]>::default(),
+                    block: _block,
+                })
+            }
+            rustc_hir::ExprKind::Array(exprs) => syn::Expr::Array(syn::ExprArray {
+                attrs,
+                bracket_token: syn::token::Bracket::default(),
+                elems: exprs.iter().map(|expr| self.compile_expr_hir(tcx, expr)).collect(),
+            }),
+            rustc_hir::ExprKind::Call(callee, args) => syn::Expr::Call(syn::ExprCall {
+                attrs,
+                func: Box::new(self.compile_expr_hir(tcx, callee)),
+                paren_token: syn::token::Paren::default(),
+                args: args.iter().map(|arg| self.compile_expr_hir(tcx, arg)).collect(),
+            }),
+            rustc_hir::ExprKind::MethodCall(_path_segment, _callee, _args, _) => not_implemented!(syn::Expr::Tuple(syn::ExprTuple {
+                attrs,
+                paren_token: syn::token::Paren::default(),
+                elems: syn::punctuated::Punctuated::new(),
+            }), "MethodCall not implemented for compile_exir_hir()"),
+            rustc_hir::ExprKind::Use(_expr, _) => not_implemented!(syn::Expr::Tuple(syn::ExprTuple {
+                attrs,
+                paren_token: syn::token::Paren::default(),
+                elems: syn::punctuated::Punctuated::new(),
+            }), "Use not implemented for compile_exir_hir()"),
+            rustc_hir::ExprKind::Tup(exprs) => syn::Expr::Tuple(syn::ExprTuple {
+                attrs,
+                paren_token: syn::token::Paren::default(),
+                elems: exprs.iter().map(|expr| self.compile_expr_hir(tcx, expr)).collect(),
+            }),
+            rustc_hir::ExprKind::Binary(op, lhs, rhs) => syn::Expr::Binary(syn::ExprBinary {
+                attrs,
+                left: Box::new(self.compile_expr_hir(tcx, lhs)),
+                op: self.compile_binop_hir(op),
+                right: Box::new(self.compile_expr_hir(tcx, rhs)),
+            }),
+            rustc_hir::ExprKind::Unary(op, expr) => syn::Expr::Unary(syn::ExprUnary {
+                attrs,
+                op: self.compile_unop_hir(*op),
+                expr: Box::new(self.compile_expr_hir(tcx, expr)),
+            }),
+            rustc_hir::ExprKind::Lit(lit) => syn::Expr::Lit(syn::ExprLit {
+                attrs,
+                lit: match &lit.node {
+                    rustc_ast::LitKind::Str(_sym, _style) => todo!(),
+                    rustc_ast::LitKind::ByteStr(_bytes, _style) => todo!(),
+                    rustc_ast::LitKind::CStr(_bytes, _style) => todo!(),
+                    rustc_ast::LitKind::Byte(value) => syn::Lit::new(proc_macro2::Literal::byte_character(*value)),
+                    rustc_ast::LitKind::Char(value) => syn::Lit::new(proc_macro2::Literal::character(*value)),
+                    rustc_ast::LitKind::Int(value, ty) => match ty {
+                        rustc_ast::LitIntType::Signed(ty) => todo!(),
+                        rustc_ast::LitIntType::Unsigned(ty) => todo!(),
+                        rustc_ast::LitIntType::Unsuffixed => syn::Lit::new(proc_macro2::Literal::u128_unsuffixed(value.0)), // TODO: Handle other types
+                    },
+                    rustc_ast::LitKind::Float(_sym, _ty) => todo!(),
+                    rustc_ast::LitKind::Bool(value) => syn::Lit::Bool(syn::LitBool {
+                        value: *value,
+                        span: proc_macro2::Span::call_site()
+                    }),
+                    rustc_ast::LitKind::Err(err) => err.raise_fatal(),
+                },
+            }),
+            rustc_hir::ExprKind::Cast(_expr, _ty) => not_implemented!(syn::Expr::Tuple(syn::ExprTuple {
+                attrs,
+                paren_token: syn::token::Paren::default(),
+                elems: syn::punctuated::Punctuated::new(),
+            }), "Cast not implemented for compile_exir_hir()"),
+            rustc_hir::ExprKind::Type(_expr, _ty) => not_implemented!(syn::Expr::Tuple(syn::ExprTuple {
+                attrs,
+                paren_token: syn::token::Paren::default(),
+                elems: syn::punctuated::Punctuated::new(),
+            }), "Type not implemented for compile_exir_hir()"),
+            rustc_hir::ExprKind::DropTemps(_expr) => not_implemented!(syn::Expr::Tuple(syn::ExprTuple {
+                attrs,
+                paren_token: syn::token::Paren::default(),
+                elems: syn::punctuated::Punctuated::new(),
+            }), "DropTemps not implemented for compile_exir_hir()"),
+            rustc_hir::ExprKind::Let(_let) => not_implemented!(syn::Expr::Tuple(syn::ExprTuple {
+                attrs,
+                paren_token: syn::token::Paren::default(),
+                elems: syn::punctuated::Punctuated::new(),
+            }), "Let not implemented for compile_exir_hir()"),
+            rustc_hir::ExprKind::If(_cond, _then, _else) => not_implemented!(syn::Expr::Tuple(syn::ExprTuple {
+                attrs,
+                paren_token: syn::token::Paren::default(),
+                elems: syn::punctuated::Punctuated::new(),
+            }), "If not implemented for compile_exir_hir()"),
+            rustc_hir::ExprKind::Loop(_cond, _label, _source, _) => not_implemented!(syn::Expr::Tuple(syn::ExprTuple {
+                attrs,
+                paren_token: syn::token::Paren::default(),
+                elems: syn::punctuated::Punctuated::new(),
+            }), "Loop not implemented for compile_exir_hir()"),
+            rustc_hir::ExprKind::Match(_cond, _arms, _source) => not_implemented!(syn::Expr::Tuple(syn::ExprTuple {
+                attrs,
+                paren_token: syn::token::Paren::default(),
+                elems: syn::punctuated::Punctuated::new(),
+            }), "Match not implemented for compile_exir_hir()"),
+            rustc_hir::ExprKind::Closure(_closure) => not_implemented!(syn::Expr::Tuple(syn::ExprTuple {
+                attrs,
+                paren_token: syn::token::Paren::default(),
+                elems: syn::punctuated::Punctuated::new(),
+            }), "Closure not implemented for compile_exir_hir()"),
+            rustc_hir::ExprKind::Block(_block, _label) => not_implemented!(syn::Expr::Tuple(syn::ExprTuple {
+                attrs,
+                paren_token: syn::token::Paren::default(),
+                elems: syn::punctuated::Punctuated::new(),
+            }), "Block not implemented for compile_exir_hir()"),
+            rustc_hir::ExprKind::Assign(_lhs, _rhs, _) => not_implemented!(syn::Expr::Tuple(syn::ExprTuple {
+                attrs,
+                paren_token: syn::token::Paren::default(),
+                elems: syn::punctuated::Punctuated::new(),
+            }), "Assign not implemented for compile_exir_hir()"),
+            rustc_hir::ExprKind::AssignOp(_op, _lhs, _rhs) => not_implemented!(syn::Expr::Tuple(syn::ExprTuple {
+                attrs,
+                paren_token: syn::token::Paren::default(),
+                elems: syn::punctuated::Punctuated::new(),
+            }), "AssignOp not implemented for compile_exir_hir()"),
+            rustc_hir::ExprKind::Field(_expr, _id) => not_implemented!(syn::Expr::Tuple(syn::ExprTuple {
+                attrs,
+                paren_token: syn::token::Paren::default(),
+                elems: syn::punctuated::Punctuated::new(),
+            }), "Field not implemented for compile_exir_hir()"),
+            rustc_hir::ExprKind::Index(_expr, _idx, _) => not_implemented!(syn::Expr::Tuple(syn::ExprTuple {
+                attrs,
+                paren_token: syn::token::Paren::default(),
+                elems: syn::punctuated::Punctuated::new(),
+            }), "Index not implemented for compile_exir_hir()"),
+            rustc_hir::ExprKind::Path(qpath) => syn::Expr::Path(syn::ExprPath {
+                attrs,
+                qself: not_implemented!(None, "compiling qself for ExprPath in compile_expr_hir() not implemented"),
+                path: match qpath {
+                    rustc_hir::QPath::Resolved(_ty, path) => self.compile_path_hir(path),
+                    rustc_hir::QPath::TypeRelative(_ty, _segment) => todo!(),
+                    rustc_hir::QPath::LangItem(_lang_item, _) => todo!(),
+                },
+            }),
+            rustc_hir::ExprKind::AddrOf(_borrow_kind, _mutbl, _expr) => not_implemented!(syn::Expr::Tuple(syn::ExprTuple {
+                attrs,
+                paren_token: syn::token::Paren::default(),
+                elems: syn::punctuated::Punctuated::new(),
+            }), "AddrOf not implemented for compile_exir_hir()"),
+            rustc_hir::ExprKind::Break(_dst, _expr) => not_implemented!(syn::Expr::Tuple(syn::ExprTuple {
+                attrs,
+                paren_token: syn::token::Paren::default(),
+                elems: syn::punctuated::Punctuated::new(),
+            }), "Break not implemented for compile_exir_hir()"),
+            rustc_hir::ExprKind::Continue(_dst) => not_implemented!(syn::Expr::Tuple(syn::ExprTuple {
+                attrs,
+                paren_token: syn::token::Paren::default(),
+                elems: syn::punctuated::Punctuated::new(),
+            }), "Continue not implemented for compile_exir_hir()"),
+            rustc_hir::ExprKind::Ret(_expr) => not_implemented!(syn::Expr::Tuple(syn::ExprTuple {
+                attrs,
+                paren_token: syn::token::Paren::default(),
+                elems: syn::punctuated::Punctuated::new(),
+            }), "Ret not implemented for compile_exir_hir()"),
+            rustc_hir::ExprKind::Become(_expr) => not_implemented!(syn::Expr::Tuple(syn::ExprTuple {
+                attrs,
+                paren_token: syn::token::Paren::default(),
+                elems: syn::punctuated::Punctuated::new(),
+            }), "Become not implemented for compile_exir_hir()"),
+            rustc_hir::ExprKind::InlineAsm(_asm) => not_implemented!(syn::Expr::Tuple(syn::ExprTuple {
+                attrs,
+                paren_token: syn::token::Paren::default(),
+                elems: syn::punctuated::Punctuated::new(),
+            }), "InlineAsm not implemented for compile_exir_hir()"),
+            rustc_hir::ExprKind::OffsetOf(_ty, _ids) => not_implemented!(syn::Expr::Tuple(syn::ExprTuple {
+                attrs,
+                paren_token: syn::token::Paren::default(),
+                elems: syn::punctuated::Punctuated::new(),
+            }), "OffsetOf not implemented for compile_exir_hir()"),
+            rustc_hir::ExprKind::Struct(_qpath, _fields, _tail) => not_implemented!(syn::Expr::Tuple(syn::ExprTuple {
+                attrs,
+                paren_token: syn::token::Paren::default(),
+                elems: syn::punctuated::Punctuated::new(),
+            }), "Struct not implemented for compile_exir_hir()"),
+            rustc_hir::ExprKind::Repeat(_expr, _const_arg) => not_implemented!(syn::Expr::Tuple(syn::ExprTuple {
+                attrs,
+                paren_token: syn::token::Paren::default(),
+                elems: syn::punctuated::Punctuated::new(),
+            }), "Repeat not implemented for compile_exir_hir()"),
+            rustc_hir::ExprKind::Yield(_expr, _source) => not_implemented!(syn::Expr::Tuple(syn::ExprTuple {
+                attrs,
+                paren_token: syn::token::Paren::default(),
+                elems: syn::punctuated::Punctuated::new(),
+            }), "Yield not implemented for compile_exir_hir()"),
+            rustc_hir::ExprKind::UnsafeBinderCast(_kind, _expr, _ty) => not_implemented!(syn::Expr::Tuple(syn::ExprTuple {
+                attrs,
+                paren_token: syn::token::Paren::default(),
+                elems: syn::punctuated::Punctuated::new(),
+            }), "UnsafeBinderCast not implemented for compile_exir_hir()"),
+            rustc_hir::ExprKind::Err(err) => err.raise_fatal(),
+        }
     }
 
     fn compile_stmt<'hir>(&self, stmt: &'hir rustc_hir::Stmt<'hir>) -> syn::Stmt {
@@ -545,11 +751,11 @@ impl CrustCompiler {
         }), None), "compile_stmt() not implemented")
     }
 
-    fn compile_block<'hir>(&self, block: &'hir rustc_hir::Block<'hir>) -> syn::Block {
+    fn compile_block<'tcx, 'hir>(&self, tcx: TyCtxt<'tcx>, block: &'hir rustc_hir::Block<'hir>) -> syn::Block {
         let mut stmts: Vec<_> = block.stmts.iter().map(|stmt| self.compile_stmt(stmt)).collect();
 
         if let Some(expr) = block.expr {
-            let expr = self.compile_expr_hir(expr);
+            let expr = self.compile_expr_hir(tcx, expr);
             stmts.push(syn::Stmt::Expr(expr, None));
         }
 
@@ -563,6 +769,37 @@ impl CrustCompiler {
             position: qself.position,
             as_token: not_implemented!(None, "compiling as_token for QSelf not implemented"),
             gt_token: <syn::Token![>]>::default(),
+        }
+    }
+
+    fn compile_unop_hir(&self, unop: rustc_hir::UnOp) -> syn::UnOp {
+        match unop {
+            rustc_hir::UnOp::Deref => syn::UnOp::Deref(<syn::Token![*]>::default()),
+            rustc_hir::UnOp::Not => syn::UnOp::Not(<syn::Token![!]>::default()),
+            rustc_hir::UnOp::Neg => syn::UnOp::Neg(<syn::Token![-]>::default()),
+        }
+    }
+
+    fn compile_binop_hir(&self, binop: &rustc_hir::BinOp) -> syn::BinOp {
+        match &binop.node {
+            rustc_hir::BinOpKind::Add => syn::BinOp::Add(<syn::Token![+]>::default()),
+            rustc_hir::BinOpKind::Sub => syn::BinOp::Sub(<syn::Token![-]>::default()),
+            rustc_hir::BinOpKind::Mul => syn::BinOp::Mul(<syn::Token![*]>::default()),
+            rustc_hir::BinOpKind::Div => syn::BinOp::Div(<syn::Token![/]>::default()),
+            rustc_hir::BinOpKind::Rem => syn::BinOp::Rem(<syn::Token![%]>::default()),
+            rustc_hir::BinOpKind::And => syn::BinOp::And(<syn::Token![&&]>::default()),
+            rustc_hir::BinOpKind::Or => syn::BinOp::Or(<syn::Token![||]>::default()),
+            rustc_hir::BinOpKind::BitXor => syn::BinOp::BitXor(<syn::Token![^]>::default()),
+            rustc_hir::BinOpKind::BitAnd => syn::BinOp::BitAnd(<syn::Token![&]>::default()),
+            rustc_hir::BinOpKind::BitOr => syn::BinOp::BitOr(<syn::Token![|]>::default()),
+            rustc_hir::BinOpKind::Shl => syn::BinOp::Shl(<syn::Token![<<]>::default()),
+            rustc_hir::BinOpKind::Shr => syn::BinOp::Shr(<syn::Token![>>]>::default()),
+            rustc_hir::BinOpKind::Eq => syn::BinOp::Eq(<syn::Token![==]>::default()),
+            rustc_hir::BinOpKind::Lt => syn::BinOp::Lt(<syn::Token![<]>::default()),
+            rustc_hir::BinOpKind::Le => syn::BinOp::Le(<syn::Token![<=]>::default()),
+            rustc_hir::BinOpKind::Ne => syn::BinOp::Ne(<syn::Token![!=]>::default()),
+            rustc_hir::BinOpKind::Ge => syn::BinOp::Ge(<syn::Token![>=]>::default()),
+            rustc_hir::BinOpKind::Gt => syn::BinOp::Gt(<syn::Token![>]>::default()),
         }
     }
 
