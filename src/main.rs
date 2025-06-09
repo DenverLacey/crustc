@@ -19,7 +19,7 @@ use quote::{ToTokens, quote};
 use rustc_driver::{Callbacks, run_compiler};
 use rustc_interface::interface;
 use rustc_hir::intravisit::{self, Visitor};
-use rustc_middle::ty::TyCtxt;
+use rustc_middle::ty::{TyCtxt, TypeckResults};
 use std::{
     collections::HashMap, default, env, ffi::{c_char, CStr, CString, OsString}, io::Write, fs::File, path::Path, process::Command, ptr, str::FromStr, sync::{Arc, Mutex}, time::Duration
 };
@@ -120,9 +120,10 @@ impl CrustCompiler {
                 let ident = self.compile_ident(id);
                 let ty = self.compile_type_hir(ty);
 
+                let tcr = tcx.typeck_body(*body_id);
                 let body = tcx.hir_body(*body_id);
                 assert!(body.params.len() == 0);
-                let expr = self.compile_expr_hir(tcx, body.value);
+                let expr = self.compile_expr_hir(tcx, tcr, body.value);
 
                 self.outfile.items.push(syn::Item::Static(syn::ItemStatic {
                     attrs,
@@ -144,9 +145,10 @@ impl CrustCompiler {
                 let generics = self.compile_generics(generics);
                 let ty = self.compile_type_hir(ty);
 
+                let tcr = tcx.typeck_body(*body_id);
                 let body = tcx.hir_body(*body_id);
                 assert!(body.params.len() == 0);
-                let expr = self.compile_expr_hir(tcx, body.value);
+                let expr = self.compile_expr_hir(tcx, tcr, body.value);
 
                 self.outfile.items.push(syn::Item::Const(syn::ItemConst {
                     attrs,
@@ -208,12 +210,13 @@ impl CrustCompiler {
                 };
 
                 assert!(has_body, "Function decls without bodies not implemented");
+                let tcr = tcx.typeck_body(*body);
                 let body = tcx.hir_body(*body);
                 let rustc_hir::ExprKind::Block(block, _) = &body.value.kind else {
                     eprintln!("Error: Function body is not a block.");
                     return;
                 };
-                let block = self.compile_block(tcx, block);
+                let block = self.compile_block(tcx, tcr, block);
 
                 self.outfile.items.push(syn::Item::Fn(syn::ItemFn {
                     attrs,
@@ -533,7 +536,7 @@ impl CrustCompiler {
         }), "compile_expr() not implemented")
     }
 
-    fn compile_expr_hir<'tcx, 'hir>(&self, tcx: TyCtxt<'tcx>, expr: &'hir rustc_hir::Expr<'hir>) -> syn::Expr {
+    fn compile_expr_hir<'tcx, 'hir>(&self, tcx: TyCtxt<'tcx>, tcr: &'tcx TypeckResults<'tcx>, expr: &'hir rustc_hir::Expr<'hir>) -> syn::Expr {
         let attrs = self.compile_attrs_hir(tcx.hir_attrs(expr.hir_id));
         match &expr.kind {
             rustc_hir::ExprKind::ConstBlock(block) => {
@@ -542,9 +545,9 @@ impl CrustCompiler {
                     eprintln!("Error: Function body is not a block.");
                     todo!("error handling")
                 };
-                let mut _block = self.compile_block(tcx, block);
+                let mut _block = self.compile_block(tcx, tcr, block);
                 if let Some(expr) = block.expr {
-                    _block.stmts.push(syn::Stmt::Expr(self.compile_expr_hir(tcx, expr), None));
+                    _block.stmts.push(syn::Stmt::Expr(self.compile_expr_hir(tcx, tcr, expr), None));
                 }
                 syn::Expr::Const(syn::ExprConst {
                     attrs,
@@ -555,13 +558,13 @@ impl CrustCompiler {
             rustc_hir::ExprKind::Array(exprs) => syn::Expr::Array(syn::ExprArray {
                 attrs,
                 bracket_token: syn::token::Bracket::default(),
-                elems: exprs.iter().map(|expr| self.compile_expr_hir(tcx, expr)).collect(),
+                elems: exprs.iter().map(|expr| self.compile_expr_hir(tcx, tcr, expr)).collect(),
             }),
             rustc_hir::ExprKind::Call(callee, args) => syn::Expr::Call(syn::ExprCall {
                 attrs,
-                func: Box::new(self.compile_expr_hir(tcx, callee)),
+                func: Box::new(self.compile_expr_hir(tcx, tcr, callee)),
                 paren_token: syn::token::Paren::default(),
-                args: args.iter().map(|arg| self.compile_expr_hir(tcx, arg)).collect(),
+                args: args.iter().map(|arg| self.compile_expr_hir(tcx, tcr, arg)).collect(),
             }),
             rustc_hir::ExprKind::MethodCall(_path_segment, _callee, _args, _) => not_implemented!(syn::Expr::Tuple(syn::ExprTuple {
                 attrs,
@@ -576,40 +579,57 @@ impl CrustCompiler {
             rustc_hir::ExprKind::Tup(exprs) => syn::Expr::Tuple(syn::ExprTuple {
                 attrs,
                 paren_token: syn::token::Paren::default(),
-                elems: exprs.iter().map(|expr| self.compile_expr_hir(tcx, expr)).collect(),
+                elems: exprs.iter().map(|expr| self.compile_expr_hir(tcx, tcr, expr)).collect(),
             }),
             rustc_hir::ExprKind::Binary(op, lhs, rhs) => syn::Expr::Binary(syn::ExprBinary {
                 attrs,
-                left: Box::new(self.compile_expr_hir(tcx, lhs)),
+                left: Box::new(self.compile_expr_hir(tcx, tcr, lhs)),
                 op: self.compile_binop_hir(op),
-                right: Box::new(self.compile_expr_hir(tcx, rhs)),
+                right: Box::new(self.compile_expr_hir(tcx, tcr, rhs)),
             }),
             rustc_hir::ExprKind::Unary(op, expr) => syn::Expr::Unary(syn::ExprUnary {
                 attrs,
                 op: self.compile_unop_hir(*op),
-                expr: Box::new(self.compile_expr_hir(tcx, expr)),
+                expr: Box::new(self.compile_expr_hir(tcx, tcr, expr)),
             }),
-            rustc_hir::ExprKind::Lit(lit) => syn::Expr::Lit(syn::ExprLit {
-                attrs,
-                lit: match &lit.node {
-                    rustc_ast::LitKind::Str(_sym, _style) => todo!(),
-                    rustc_ast::LitKind::ByteStr(_bytes, _style) => todo!(),
-                    rustc_ast::LitKind::CStr(_bytes, _style) => todo!(),
-                    rustc_ast::LitKind::Byte(value) => syn::Lit::new(proc_macro2::Literal::byte_character(*value)),
-                    rustc_ast::LitKind::Char(value) => syn::Lit::new(proc_macro2::Literal::character(*value)),
-                    rustc_ast::LitKind::Int(value, ty) => match ty {
-                        rustc_ast::LitIntType::Signed(ty) => todo!(),
-                        rustc_ast::LitIntType::Unsigned(ty) => todo!(),
-                        rustc_ast::LitIntType::Unsuffixed => syn::Lit::new(proc_macro2::Literal::u128_unsuffixed(value.0)), // TODO: Handle other types
+            rustc_hir::ExprKind::Lit(lit) => {
+                let wrap = matches!(&lit.node, rustc_ast::LitKind::Str(..) | rustc_ast::LitKind::CStr(..));
+                let lit = syn::Expr::Lit(syn::ExprLit {
+                    attrs,
+                    lit: match &lit.node {
+                        rustc_ast::LitKind::Str(sym, _) => syn::Lit::CStr(syn::LitCStr::new(
+                            Box::leak(CString::new(sym.to_ident_string()).expect("Bad C-String").into_boxed_c_str()),
+                            proc_macro2::Span::call_site()
+                        )),
+                        rustc_ast::LitKind::ByteStr(bytes, _) => syn::Lit::ByteStr(syn::LitByteStr::new(bytes, proc_macro2::Span::call_site())),
+                        rustc_ast::LitKind::CStr(bytes, _) => syn::Lit::CStr(syn::LitCStr::new(
+                            Box::leak(CString::new(bytes.as_ref()).expect("Bad C-String").into_boxed_c_str()),
+                            proc_macro2::Span::call_site()
+                        )),
+                        rustc_ast::LitKind::Byte(value) => syn::Lit::new(proc_macro2::Literal::byte_character(*value)),
+                        rustc_ast::LitKind::Char(value) => syn::Lit::new(proc_macro2::Literal::character(*value)),
+                        rustc_ast::LitKind::Int(value, ty) => match ty {
+                            rustc_ast::LitIntType::Signed(ty) => todo!(),
+                            rustc_ast::LitIntType::Unsigned(ty) => todo!(),
+                            rustc_ast::LitIntType::Unsuffixed => syn::Lit::new(proc_macro2::Literal::u128_unsuffixed(value.0)), // TODO: Handle other types
+                        },
+                        rustc_ast::LitKind::Float(sym, _ty) => syn::Lit::Float(syn::LitFloat::new(sym.as_str(), proc_macro2::Span::call_site())),
+                        rustc_ast::LitKind::Bool(value) => syn::Lit::Bool(syn::LitBool {
+                            value: *value,
+                            span: proc_macro2::Span::call_site()
+                        }),
+                        rustc_ast::LitKind::Err(err) => err.raise_fatal(),
                     },
-                    rustc_ast::LitKind::Float(_sym, _ty) => todo!(),
-                    rustc_ast::LitKind::Bool(value) => syn::Lit::Bool(syn::LitBool {
-                        value: *value,
-                        span: proc_macro2::Span::call_site()
-                    }),
-                    rustc_ast::LitKind::Err(err) => err.raise_fatal(),
-                },
-            }),
+                });
+
+                if wrap {
+                    syn::parse_quote! {
+                        (#lit).as_ptr()
+                    }
+                } else {
+                    lit
+                }
+            }
             rustc_hir::ExprKind::Cast(_expr, _ty) => not_implemented!(syn::Expr::Tuple(syn::ExprTuple {
                 attrs,
                 paren_token: syn::token::Paren::default(),
@@ -751,11 +771,11 @@ impl CrustCompiler {
         }), None), "compile_stmt() not implemented")
     }
 
-    fn compile_block<'tcx, 'hir>(&self, tcx: TyCtxt<'tcx>, block: &'hir rustc_hir::Block<'hir>) -> syn::Block {
+    fn compile_block<'tcx, 'hir>(&self, tcx: TyCtxt<'tcx>, tcr: &'tcx TypeckResults<'tcx>, block: &'hir rustc_hir::Block<'hir>) -> syn::Block {
         let mut stmts: Vec<_> = block.stmts.iter().map(|stmt| self.compile_stmt(stmt)).collect();
 
         if let Some(expr) = block.expr {
-            let expr = self.compile_expr_hir(tcx, expr);
+            let expr = self.compile_expr_hir(tcx, tcr, expr);
             stmts.push(syn::Stmt::Expr(expr, None));
         }
 
@@ -875,7 +895,7 @@ fn main() {
         let args = Box::leak(env::args()
             .collect::<Vec<_>>()
             .into_boxed_slice());
-        unsafe { report_error_not_enough_args(args) };
+        report_error_not_enough_args(args);
         return;
     };
 
@@ -884,7 +904,7 @@ fn main() {
             .collect::<Vec<_>>()
             .into_boxed_slice());
         report_error_failed_to_open_source_file(args);
-        std::process::exit(1);
+        std::process::exit(0);
     });
 
     run_compiler(
