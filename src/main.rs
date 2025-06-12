@@ -8,13 +8,11 @@ use std::{
 use syn::{self, token::Default, Token};
 
 use ra_ap_vfs::{VfsPath, Vfs};
-// use ra_ap_project_model::{ProjectJson, ProjectWorkspace};
 use ra_ap_vfs_notify::NotifyHandle;
 use ra_ap_base_db::{salsa::Durability, BuiltCrateData, Crate, CrateGraphBuilder, CrateOrigin, CrateWorkspaceData, Env, ExtraCrateData, FileId, FileSet, LangCrateOrigin, RootQueryDb, SourceDatabase, SourceRoot, SourceRootId};
 use ra_ap_ide_db::{symbol_index::SymbolsDatabase, LineIndexDatabase, RootDatabase};
-use ra_ap_hir::{CfgOptions, EditionedFileId, ModuleDef, Semantics, Symbol};
-use ra_ap_hir_ty::Ty;
-use ra_ap_syntax::{SourceFile, SyntaxNode, ast::Expr};
+use ra_ap_hir::{db::HirDatabase, CfgOptions, EditionedFileId, ModuleDef, Semantics, Symbol};
+use ra_ap_syntax::{ast::{Expr, HasModuleItem, HasName, Item}, AstNode, SourceFile, SyntaxNode};
 use ra_ap_paths::{AbsPathBuf, Utf8PathBuf};
 use std::path::PathBuf;
 
@@ -178,9 +176,47 @@ fn main() {
 
     db.set_all_crates(triomphe::Arc::new(Box::new([krate])));
 
-    let parse = db.parse(EditionedFileId::new(&db, file_id, ra_ap_syntax::Edition::Edition2021));
-    let dump = parse.debug_dump();
-    println!("{dump}");
+    let sem = Semantics::new(&db);
+    let ast = sem.parse(EditionedFileId::new(&db, file_id, ra_ap_syntax::Edition::Edition2021));
+
+    for item in ast.items() {
+        match item {
+            Item::Const(_) => todo!(),
+            Item::Enum(_) => todo!(),
+            Item::ExternBlock(extern_block) => todo!(),
+            Item::ExternCrate(extern_crate) => todo!(),
+            Item::Fn(func) => {
+                let name = func.name().unwrap().text().to_string();
+                println!("func: {name}");
+
+                let body = func.body().unwrap();
+                for stmt in body.statements() {
+                    let expr = Expr::cast(stmt.syntax().clone()).unwrap();
+                    let ty = sem.type_of_expr(&expr).unwrap();
+                    println!("`{expr}` :: {ty:#?}");
+                }
+
+                if let Some(expr) = body.tail_expr() {
+                    let ty = sem.type_of_expr(&expr).unwrap();
+                    println!("`{expr}` :: {ty:#?}");
+                }
+            }
+            Item::Impl(_) => todo!(),
+            Item::MacroCall(macro_call) => todo!(),
+            Item::MacroDef(macro_def) => todo!(),
+            Item::MacroRules(macro_rules) => todo!(),
+            Item::Module(module) => todo!(),
+            Item::Static(_) => todo!(),
+            Item::Struct(_) => todo!(),
+            Item::Trait(_) => todo!(),
+            Item::TraitAlias(trait_alias) => todo!(),
+            Item::TypeAlias(type_alias) => todo!(),
+            Item::Union(union) => todo!(),
+            Item::Use(_) => todo!(),
+        }
+    }
+
+
     return;
 
     let file_tokens = compiler.outfile.into_token_stream();
