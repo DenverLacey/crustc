@@ -9,6 +9,15 @@ quote = "1.0.40"
 syn = { version = "2.0.101", features = ["full", "printing", "extra-traits"] }
 annotate-snippets = "0.11.5"
 libc = { path = "libs/libc" }
+ra_ap_vfs = "0.0.286"
+ra_ap_vfs-notify = "0.0.286"
+ra_ap_base_db = "0.0.286"
+ra_ap_ide_db = "0.0.286"
+ra_ap_hir = "0.0.286"
+ra_ap_hir_ty = "0.0.286"
+ra_ap_syntax = "0.0.286"
+ra_ap_paths = "0.0.286"
+triomphe = "0.1.14"
 
 [profile.dev]
 debug = true
