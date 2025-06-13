@@ -12,7 +12,7 @@ use ra_ap_vfs_notify::NotifyHandle;
 use ra_ap_base_db::{salsa::Durability, BuiltCrateData, Crate, CrateGraphBuilder, CrateOrigin, CrateWorkspaceData, Env, ExtraCrateData, FileId, FileSet, LangCrateOrigin, RootQueryDb, SourceDatabase, SourceRoot, SourceRootId};
 use ra_ap_ide_db::{symbol_index::SymbolsDatabase, LineIndexDatabase, RootDatabase};
 use ra_ap_hir::{db::HirDatabase, CfgOptions, EditionedFileId, ModuleDef, Semantics, Symbol};
-use ra_ap_syntax::{ast::{Expr, HasModuleItem, HasName, Item}, AstNode, SourceFile, SyntaxNode};
+use ra_ap_syntax::{ast::{Expr, HasAttrs, HasModuleItem, HasName, HasVisibility, Item, Stmt, Visibility, VisibilityKind}, AstNode, SourceFile, SyntaxNode};
 use ra_ap_paths::{AbsPathBuf, Utf8PathBuf};
 use std::path::PathBuf;
 
@@ -55,6 +55,213 @@ impl CrustCompiler {
                 ],
             },
         })
+    }
+}
+
+impl CrustCompiler {
+    fn compile_item<'a>(&mut self, sem: &'a Semantics<'a, RootDatabase>, item: Item) {
+        match item {
+            Item::Const(konst) => {
+                let name = konst.name().unwrap().text().to_string();
+                let Some(body) = konst.body() else {
+                    todo!("bodiless const items");
+                };
+
+                let vis = self.compile_vis(konst.visibility());
+                let expr = self.compile_expr(sem, &body);
+
+                self.outfile.items.push(syn::Item::Const(syn::ItemConst {
+                    attrs: not_implemented!(vec![], "attrs for const item"),
+                    vis,
+                    const_token: <syn::Token![const]>::default(),
+                    ident: syn::Ident::new(&name, proc_macro2::Span::call_site()),
+                    generics: not_implemented!(syn::Generics::default(), "generics for const item"),
+                    colon_token: <syn::Token![:]>::default(),
+                    ty: not_implemented!(Box::new(syn::Type::Never(syn::TypeNever { bang_token: <syn::Token![!]>::default() })), "ty for const item"),
+                    eq_token: <syn::Token![=]>::default(),
+                    expr: Box::new(expr),
+                    semi_token: <syn::Token![;]>::default(),
+                }));
+            }
+            Item::Enum(_) => todo!(),
+            Item::ExternBlock(extern_block) => todo!(),
+            Item::ExternCrate(extern_crate) => todo!(),
+            Item::Fn(func) => {
+                let name = func.name().unwrap().text().to_string();
+                println!("func: {name}");
+
+                let body = func.body().unwrap();
+                for stmt in body.statements() {
+                    match stmt {
+                        Stmt::ExprStmt(expr) => {
+                            let expr = expr.expr().unwrap();
+                            let ty = sem.type_of_expr(&expr).unwrap();
+                            println!("`{expr}` :: {ty:#?}");
+                        }
+                        Stmt::Item(item) => todo!(),
+                        Stmt::LetStmt(let_stmt) => todo!(),
+                    }
+                }
+
+                if let Some(expr) = body.tail_expr() {
+                    let ty = sem.type_of_expr(&expr).unwrap();
+                    println!("`{expr}` :: {ty:#?}");
+                }
+            }
+            Item::Impl(_) => todo!(),
+            Item::MacroCall(macro_call) => todo!(),
+            Item::MacroDef(macro_def) => todo!(),
+            Item::MacroRules(macro_rules) => todo!(),
+            Item::Module(module) => todo!(),
+            Item::Static(_) => todo!(),
+            Item::Struct(strukt) => {
+                let ident = syn::Ident::new(Box::leak(strukt.name().unwrap().text().to_string().into_boxed_str()), proc_macro2::Span::call_site());
+                self.outfile.items.push(match strukt.kind() {
+                    ra_ap_syntax::ast::StructKind::Record(fields) => syn::Item::Struct(syn::ItemStruct {
+                        attrs: not_implemented!(vec![], "attrs for struct item"),
+                        vis: self.compile_vis(strukt.visibility()),
+                        struct_token: <syn::Token![struct]>::default(),
+                        ident,
+                        generics: not_implemented!(syn::Generics::default(), "generics for struct item"),
+                        fields: syn::Fields::Named(syn::FieldsNamed {
+                            brace_token: syn::token::Brace::default(),
+                            named: fields.fields().map(|f| syn::Field {
+                                attrs: not_implemented!(vec![], "attrs for named fields"),
+                                vis: self.compile_vis(f.visibility()),
+                                mutability: not_implemented!(syn::FieldMutability::None, "mutability of named fields"),
+                                ident: f.name().map(|name| syn::Ident::new(
+                                    Box::leak(name.text().to_string().into_boxed_str()),
+                                    proc_macro2::Span::call_site(),
+                                )),
+                                colon_token: Some(<syn::Token![:]>::default()),
+                                ty: self.compile_type(f.ty().unwrap()),
+                            }).collect(),
+                        }) ,
+                        semi_token: None,
+                    }),
+                    ra_ap_syntax::ast::StructKind::Tuple(fields) => syn::Item::Struct(syn::ItemStruct {
+                        attrs: not_implemented!(vec![], "attrs for struct item"),
+                        vis: self.compile_vis(strukt.visibility()),
+                        struct_token: <syn::Token![struct]>::default(),
+                        ident,
+                        generics: not_implemented!(syn::Generics::default(), "generics for struct item"),
+                        fields: syn::Fields::Unnamed(syn::FieldsUnnamed {
+                            paren_token: syn::token::Paren::default(),
+                            unnamed: fields.fields().map(|f| syn::Field {
+                                attrs: not_implemented!(vec![], "attrs for unnamed fields"),
+                                vis: self.compile_vis(f.visibility()),
+                                mutability: not_implemented!(syn::FieldMutability::None, "mutability of unnamed fields"),
+                                ident: None,
+                                colon_token: None,
+                                ty: self.compile_type(f.ty().unwrap()),
+                            }).collect(),
+                        }),
+                        semi_token: None,
+                    }),
+                    ra_ap_syntax::ast::StructKind::Unit => syn::Item::Struct(syn::ItemStruct {
+                        attrs: not_implemented!(vec![], "attrs for struct item"),
+                        vis: self.compile_vis(strukt.visibility()),
+                        struct_token: <syn::Token![struct]>::default(),
+                        ident,
+                        generics: todo!(),
+                        fields: syn::Fields::Unit,
+                        semi_token: None,
+                    })
+                });
+            }
+            Item::Trait(_) => todo!(),
+            Item::TraitAlias(trait_alias) => todo!(),
+            Item::TypeAlias(type_alias) => todo!(),
+            Item::Union(union) => todo!(),
+            Item::Use(_) => todo!(),
+        }
+    }
+
+    fn compile_vis(&self, vis: Option<Visibility>) -> syn::Visibility {
+        let Some(vis) = vis else {
+            return syn::Visibility::Public(<syn::Token![pub]>::default());
+        };
+
+        fn make_restricted(ident: &'static str) -> syn::Visibility {
+            syn::Visibility::Restricted(syn::VisRestricted {
+                pub_token: <syn::Token![pub]>::default(),
+                paren_token: syn::token::Paren::default(),
+                in_token: None,
+                path: Box::new(syn::Path {
+                    leading_colon: None,
+                    segments: [syn::PathSegment {
+                        ident: syn::Ident::new(ident, proc_macro2::Span::call_site()),
+                        arguments: syn::PathArguments::None
+                    }].into_iter().collect(),
+                }),
+            })
+        }
+
+        match vis.kind() {
+            VisibilityKind::In(path) => syn::Visibility::Restricted(syn::VisRestricted {
+                pub_token: <syn::Token![pub]>::default(),
+                paren_token: syn::token::Paren::default(),
+                in_token: Some(<syn::Token![in]>::default()),
+                path: Box::new(self.compile_path(path)),
+            }),
+            VisibilityKind::PubCrate => make_restricted("crate"),
+            VisibilityKind::PubSuper => make_restricted("super"),
+            VisibilityKind::PubSelf => make_restricted("self"),
+            VisibilityKind::Pub => syn::Visibility::Public(<syn::Token![pub]>::default()),
+        }
+    }
+
+    fn compile_stmt<'a>(&self, sem: &'a Semantics<'a, RootDatabase>, stmt: &Stmt) -> syn::Stmt {
+        not_implemented!(syn::Stmt::Expr(syn::Expr::Tuple(syn::ExprTuple {
+            attrs: vec![],
+            paren_token: syn::token::Paren::default(),
+            elems: syn::punctuated::Punctuated::default(),
+        }), Some(<syn::Token![;]>::default())), "compile_stmt not implemented")
+    }
+
+    fn compile_expr<'a>(&self, sem: &'a Semantics<'a, RootDatabase>, stmt: &Expr) -> syn::Expr {
+        not_implemented!(syn::Expr::Tuple(syn::ExprTuple {
+            attrs: vec![],
+            paren_token: syn::token::Paren::default(),
+            elems: syn::punctuated::Punctuated::default(),
+        }), "compile_expr not implemented")
+    }
+
+    fn compile_type(&self, ty: ra_ap_syntax::ast::Type) -> syn::Type {
+        not_implemented!(syn::Type::Never(syn::TypeNever {
+            bang_token: <syn::Token![!]>::default(),
+        }), "compile_type not implemented")
+    }
+
+    fn compile_path(&self, path: ra_ap_syntax::ast::Path) -> syn::Path {
+        syn::Path {
+            leading_colon: None, // TODO
+            segments: path.segments().map(|seg| {
+                match seg.kind().unwrap() {
+                    ra_ap_syntax::ast::PathSegmentKind::Name(name_ref) => {
+                        let ident = Box::leak(name_ref.text().to_string().into_boxed_str());
+                        syn::PathSegment {
+                            ident: syn::Ident::new(ident, proc_macro2::Span::call_site()),
+                            arguments: syn::PathArguments::None,
+                        }
+                    }
+                    ra_ap_syntax::ast::PathSegmentKind::Type { type_ref, trait_ref } => todo!(),
+                    ra_ap_syntax::ast::PathSegmentKind::SelfTypeKw => todo!(),
+                    ra_ap_syntax::ast::PathSegmentKind::SelfKw => syn::PathSegment {
+                        ident: syn::Ident::new("self", proc_macro2::Span::call_site()),
+                        arguments: syn::PathArguments::None
+                    },
+                    ra_ap_syntax::ast::PathSegmentKind::SuperKw => syn::PathSegment {
+                        ident: syn::Ident::new("super", proc_macro2::Span::call_site()),
+                        arguments: syn::PathArguments::None
+                    },
+                    ra_ap_syntax::ast::PathSegmentKind::CrateKw => syn::PathSegment {
+                        ident: syn::Ident::new("crate", proc_macro2::Span::call_site()),
+                        arguments: syn::PathArguments::None
+                    },
+                }
+            }).collect(),
+        }
     }
 }
 
@@ -180,44 +387,8 @@ fn main() {
     let ast = sem.parse(EditionedFileId::new(&db, file_id, ra_ap_syntax::Edition::Edition2021));
 
     for item in ast.items() {
-        match item {
-            Item::Const(_) => todo!(),
-            Item::Enum(_) => todo!(),
-            Item::ExternBlock(extern_block) => todo!(),
-            Item::ExternCrate(extern_crate) => todo!(),
-            Item::Fn(func) => {
-                let name = func.name().unwrap().text().to_string();
-                println!("func: {name}");
-
-                let body = func.body().unwrap();
-                for stmt in body.statements() {
-                    let expr = Expr::cast(stmt.syntax().clone()).unwrap();
-                    let ty = sem.type_of_expr(&expr).unwrap();
-                    println!("`{expr}` :: {ty:#?}");
-                }
-
-                if let Some(expr) = body.tail_expr() {
-                    let ty = sem.type_of_expr(&expr).unwrap();
-                    println!("`{expr}` :: {ty:#?}");
-                }
-            }
-            Item::Impl(_) => todo!(),
-            Item::MacroCall(macro_call) => todo!(),
-            Item::MacroDef(macro_def) => todo!(),
-            Item::MacroRules(macro_rules) => todo!(),
-            Item::Module(module) => todo!(),
-            Item::Static(_) => todo!(),
-            Item::Struct(_) => todo!(),
-            Item::Trait(_) => todo!(),
-            Item::TraitAlias(trait_alias) => todo!(),
-            Item::TypeAlias(type_alias) => todo!(),
-            Item::Union(union) => todo!(),
-            Item::Use(_) => todo!(),
-        }
+        compiler.compile_item(&sem, item);
     }
-
-
-    return;
 
     let file_tokens = compiler.outfile.into_token_stream();
 

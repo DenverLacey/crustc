@@ -1,4 +1,4 @@
-static STATIC_STRING: *const char = "hello";
+// static STATIC_STRING: *const char = "hello";
 const CONST_STRING: *const char   = "world";
 
 fn main() {
