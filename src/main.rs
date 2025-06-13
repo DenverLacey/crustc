@@ -11,10 +11,16 @@ use ra_ap_syntax::{
         BlockExpr, Expr, HasModuleItem, HasName, HasVisibility, Item, Pat, Stmt, Type, Visibility,
         VisibilityKind,
     },
-    AstNode, TextRange,
+    AstNode, AstToken, TextRange,
 };
 use ra_ap_vfs::{Vfs, VfsPath};
-use std::{env, ffi::OsString, fs::File, io::Write, process::Command};
+use std::{
+    env,
+    ffi::{CString, OsString},
+    fs::File,
+    io::Write,
+    process::Command,
+};
 
 macro_rules! not_implemented {
     () => {{
@@ -259,12 +265,128 @@ impl CrustCompiler {
         }
     }
 
-    fn compile_expr<'a>(&self, _sem: &'a Semantics<'a, RootDatabase>, _expr: &Expr) -> syn::Expr {
-        not_implemented!(syn::Expr::Tuple(syn::ExprTuple {
-            attrs: vec![],
-            paren_token: syn::token::Paren::default(),
-            elems: syn::punctuated::Punctuated::default(),
-        }), "compile_expr not implemented")
+    fn compile_expr<'a>(&self, sem: &'a Semantics<'a, RootDatabase>, expr: &Expr) -> syn::Expr {
+        match expr {
+            Expr::ArrayExpr(_array_expr) => todo!(),
+            Expr::AsmExpr(_asm_expr) => todo!(),
+            Expr::AwaitExpr(_await_expr) => todo!(),
+            Expr::BecomeExpr(_become_expr) => todo!(),
+            Expr::BinExpr(_bin_expr) => todo!(),
+            Expr::BlockExpr(_block_expr) => todo!(),
+            Expr::BreakExpr(_break_expr) => todo!(),
+            Expr::CallExpr(_call_expr) => todo!(),
+            Expr::CastExpr(_cast_expr) => todo!(),
+            Expr::ClosureExpr(_closure_expr) => todo!(),
+            Expr::ContinueExpr(_continue_expr) => todo!(),
+            Expr::FieldExpr(_field_expr) => todo!(),
+            Expr::ForExpr(_for_expr) => todo!(),
+            Expr::FormatArgsExpr(_format_args_expr) => todo!(),
+            Expr::IfExpr(_if_expr) => todo!(),
+            Expr::IndexExpr(_index_expr) => todo!(),
+            Expr::LetExpr(_let_expr) => todo!(),
+            Expr::Literal(lit) => match lit.kind() {
+                ra_ap_syntax::ast::LiteralKind::String(s) => syn::Expr::MethodCall(syn::ExprMethodCall {
+                    attrs: vec![],
+                    receiver: Box::new(syn::Expr::Lit(syn::ExprLit {
+                        attrs: not_implemented!(vec![], "attrs lit string expr"),
+                        lit: syn::Lit::CStr(syn::LitCStr::new(
+                            CString::new(s.value().expect("bad escape character").bytes().collect::<Vec<_>>()).expect("null byte in string").as_c_str(),
+                            proc_macro2::Span::call_site()
+                        )),
+                    })),
+                    dot_token: <syn::Token![.]>::default(),
+                    method: syn::Ident::new("as_ptr", proc_macro2::Span::call_site()),
+                    turbofish: None,
+                    paren_token: syn::token::Paren::default(),
+                    args: syn::punctuated::Punctuated::new(),
+                }),
+                ra_ap_syntax::ast::LiteralKind::ByteString(bs) => syn::Expr::Lit(syn::ExprLit {
+                    attrs: not_implemented!(vec![], "attrs lit byte string expr"),
+                    lit: syn::Lit::ByteStr(syn::LitByteStr::new(bs.value().expect("bad escape character").as_ref(), proc_macro2::Span::call_site())),
+                }),
+                ra_ap_syntax::ast::LiteralKind::CString(cs) => syn::Expr::Lit(syn::ExprLit {
+                    attrs: not_implemented!(vec![], "attrs lit cstring expr"),
+                    lit: syn::Lit::CStr(syn::LitCStr::new(
+                        CString::new(cs.value().expect("bad escape character")).expect("null byte in cstring").as_c_str(),
+                        proc_macro2::Span::call_site(),
+                    )),
+                }),
+                ra_ap_syntax::ast::LiteralKind::IntNumber(i) => syn::Expr::Lit(syn::ExprLit {
+                    attrs: not_implemented!(vec![], "attrs lit int expr"),
+                    lit: syn::Lit::Int(syn::LitInt::new(i.text(), proc_macro2::Span::call_site())),
+                }),
+                ra_ap_syntax::ast::LiteralKind::FloatNumber(f) => syn::Expr::Lit(syn::ExprLit {
+                    attrs: not_implemented!(vec![], "attrs lit float expr"),
+                    lit: syn::Lit::Float(syn::LitFloat::new(f.text(), proc_macro2::Span::call_site())),
+                }),
+                ra_ap_syntax::ast::LiteralKind::Char(c) => syn::Expr::Lit(syn::ExprLit {
+                    attrs: not_implemented!(vec![], "attrs lit char expr"),
+                    lit: syn::Lit::Char(syn::LitChar::new(c.value().expect("bad escape character"), proc_macro2::Span::call_site())),
+                }),
+                ra_ap_syntax::ast::LiteralKind::Byte(b) => syn::Expr::Lit(syn::ExprLit {
+                    attrs: not_implemented!(vec![], "attrs lit byte expr"),
+                    lit: syn::Lit::Byte(syn::LitByte::new(b.value().expect("bad escape character"), proc_macro2::Span::call_site())),
+                }),
+                ra_ap_syntax::ast::LiteralKind::Bool(b) => syn::Expr::Lit(syn::ExprLit {
+                    attrs: not_implemented!(vec![], "attrs lit bool expr"),
+                    lit: syn::Lit::Bool(syn::LitBool::new(b, proc_macro2::Span::call_site())),
+                }),
+            },
+            Expr::LoopExpr(_loop_expr) => todo!(),
+            Expr::MacroExpr(_macro_expr) => todo!(),
+            Expr::MatchExpr(_match_expr) => todo!(),
+            Expr::MethodCallExpr(_method_call_expr) => todo!(),
+            Expr::OffsetOfExpr(_offset_of_expr) => todo!(),
+            Expr::ParenExpr(_paren_expr) => todo!(),
+            Expr::PathExpr(path) => syn::Expr::Path(syn::PatPath {
+                attrs: not_implemented!(vec![], "attrs for path expr"),
+                qself: None, // TODO
+                path: self.compile_path(path.path().unwrap()),
+            }),
+            Expr::PrefixExpr(_prefix_expr) => todo!(),
+            Expr::RangeExpr(_range_expr) => todo!(),
+            Expr::RecordExpr(_record_expr) => todo!(),
+            Expr::RefExpr(rif) => syn::Expr::Paren(syn::ExprParen {
+                attrs: not_implemented!(vec![], "attrs for ref expr"),
+                paren_token: syn::token::Paren::default(),
+                expr: Box::new(syn::Expr::Cast(syn::ExprCast {
+                    attrs: vec![],
+                    expr: Box::new(syn::Expr::Paren(syn::ExprParen {
+                        attrs: vec![],
+                        paren_token: syn::token::Paren::default(),
+                        expr: Box::new(syn::Expr::Reference(syn::ExprReference {
+                            attrs: vec![],
+                            and_token: <syn::Token![&]>::default(),
+                            mutability: rif.mut_token().map(|_| <syn::Token![mut]>::default()),
+                            expr: Box::new(self.compile_expr(sem, &rif.expr().unwrap())),
+                        })),
+                    })),
+                    as_token: <syn::Token![as]>::default(),
+                    ty: Box::new(syn::Type::Ptr(syn::TypePtr {
+                        star_token: <syn::Token![*]>::default(),
+                        const_token: rif.const_token().map(|_| <syn::Token![const]>::default()),
+                        mutability: rif.mut_token().map(|_| <syn::Token![mut]>::default()),
+                        elem: Box::new(syn::Type::Infer(syn::TypeInfer {
+                            underscore_token: <syn::Token![_]>::default(),
+                        })),
+                    })),
+                })),
+            }),
+            Expr::ReturnExpr(ret) => syn::Expr::Return(syn::ExprReturn {
+                attrs: not_implemented!(vec![], "attrs for return expr"),
+                return_token: <syn::Token![return]>::default(),
+                expr: ret.expr().map(|expr| Box::new(self.compile_expr(sem, &expr))),
+            }),
+            Expr::TryExpr(_try_expr) => todo!(),
+            Expr::TupleExpr(_tuple_expr) => todo!(),
+            Expr::UnderscoreExpr(_) => syn::Expr::Infer(syn::ExprInfer {
+                attrs: not_implemented!(vec![], "attrs for underscore expr"),
+                underscore_token: <syn::Token![_]>::default(),
+            }),
+            Expr::WhileExpr(_while_expr) => todo!(),
+            Expr::YeetExpr(_yeet_expr) => todo!(),
+            Expr::YieldExpr(_yield_expr) => todo!(),
+        }
     }
 
     fn compile_type<'a>(&self, sem: &'a Semantics<'a, RootDatabase>, ty: Type) -> syn::Type {
@@ -279,7 +401,9 @@ impl CrustCompiler {
             Type::FnPtrType(_fn_ptr_type) => todo!(),
             Type::ForType(_for_type) => todo!(),
             Type::ImplTraitType(_impl_trait_type) => todo!(),
-            Type::InferType(_infer_type) => todo!(),
+            Type::InferType(_infer_type) => syn::Type::Infer(syn::TypeInfer {
+                underscore_token: <syn::Token![_]>::default(),
+            }),
             Type::MacroType(_macro_type) => todo!(),
             Type::NeverType(..) => syn::Type::Never(syn::TypeNever {
                 bang_token: <syn::Token![!]>::default(),
@@ -322,7 +446,7 @@ impl CrustCompiler {
                             arguments: syn::PathArguments::None,
                         }
                     }
-                    ra_ap_syntax::ast::PathSegmentKind::Type { type_ref, trait_ref } => todo!(),
+                    ra_ap_syntax::ast::PathSegmentKind::Type { type_ref: _, trait_ref: _ } => todo!(),
                     ra_ap_syntax::ast::PathSegmentKind::SelfTypeKw => syn::PathSegment {
                         ident: syn::Ident::new("Self", proc_macro2::Span::call_site()), // NOTE: I think this is right
                         arguments: syn::PathArguments::None,
@@ -507,7 +631,7 @@ fn main() {
     write!(out, "{file_tokens}").unwrap();
 
     Command::new("rustfmt")
-        .args([OsString::from(generated_filepath)])
+        .args([OsString::from("--edition=2021"), OsString::from(generated_filepath)])
         .output()
         .expect("Error: Failed to format code.");
 }
