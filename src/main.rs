@@ -1,19 +1,20 @@
 use quote::ToTokens;
 use ra_ap_base_db::{
-    salsa::Durability, BuiltCrateData, Crate, CrateOrigin, CrateWorkspaceData,
-    Env, ExtraCrateData, FileSet, RootQueryDb, SourceDatabase, SourceRoot,
-    SourceRootId,
+    salsa::Durability, BuiltCrateData, Crate, CrateOrigin, CrateWorkspaceData, Env, ExtraCrateData,
+    FileSet, RootQueryDb, SourceDatabase, SourceRoot, SourceRootId,
 };
-use ra_ap_hir::{sym::default, CfgOptions, EditionedFileId, Semantics, Symbol};
+use ra_ap_hir::{CfgOptions, EditionedFileId, Semantics, Symbol};
 use ra_ap_ide_db::RootDatabase;
 use ra_ap_paths::AbsPathBuf;
-use ra_ap_syntax::{ast::{
-    BlockExpr, Expr, HasModuleItem, HasName, HasVisibility, Item, Pat, Stmt, Type, Visibility, VisibilityKind
-}, AstNode, TextRange};
-use ra_ap_vfs::{Vfs, VfsPath};
-use std::{
-    default, env, ffi::OsString, fs::File, io::Write, process::Command
+use ra_ap_syntax::{
+    ast::{
+        BlockExpr, Expr, HasModuleItem, HasName, HasVisibility, Item, Pat, Stmt, Type, Visibility,
+        VisibilityKind,
+    },
+    AstNode, TextRange,
 };
+use ra_ap_vfs::{Vfs, VfsPath};
+use std::{env, ffi::OsString, fs::File, io::Write, process::Command};
 
 macro_rules! not_implemented {
     () => {{
@@ -58,7 +59,7 @@ impl CrustCompiler {
 }
 
 impl CrustCompiler {
-    fn compile_item<'a>(&mut self, sem: &'a Semantics<'a, RootDatabase>, item: Item) {
+    fn compile_item<'a>(&self, sem: &'a Semantics<'a, RootDatabase>, item: &Item) -> syn::Item {
         match item {
             Item::Const(konst) => {
                 let name = konst.name().unwrap().text().to_string();
@@ -69,7 +70,7 @@ impl CrustCompiler {
                 let vis = self.compile_vis(konst.visibility());
                 let expr = self.compile_expr(sem, &body);
 
-                self.outfile.items.push(syn::Item::Const(syn::ItemConst {
+                syn::Item::Const(syn::ItemConst {
                     attrs: not_implemented!(vec![], "attrs for const item"),
                     vis,
                     const_token: <syn::Token![const]>::default(),
@@ -80,7 +81,7 @@ impl CrustCompiler {
                     eq_token: <syn::Token![=]>::default(),
                     expr: Box::new(expr),
                     semi_token: <syn::Token![;]>::default(),
-                }));
+                })
             }
             Item::Enum(_) => todo!(),
             Item::ExternBlock(_extern_block) => todo!(),
@@ -89,7 +90,7 @@ impl CrustCompiler {
                 let Some(body) = func.body() else {
                     todo!("bodiless functions");
                 };
-                self.outfile.items.push(syn::Item::Fn(syn::ItemFn {
+                syn::Item::Fn(syn::ItemFn {
                     attrs: not_implemented!(vec![], "attrs for fn items"),
                     vis: self.compile_vis(func.visibility()),
                     sig: syn::Signature {
@@ -117,7 +118,7 @@ impl CrustCompiler {
                         )),
                     },
                     block: Box::new(self.compile_block(sem, &body)),
-                }));
+                })
             }
             Item::Impl(_) => todo!(),
             Item::MacroCall(_macro_call) => todo!(),
@@ -127,7 +128,7 @@ impl CrustCompiler {
             Item::Static(_) => todo!(),
             Item::Struct(strukt) => {
                 let ident = syn::Ident::new(Box::leak(strukt.name().unwrap().text().to_string().into_boxed_str()), proc_macro2::Span::call_site());
-                self.outfile.items.push(match strukt.kind() {
+                match strukt.kind() {
                     ra_ap_syntax::ast::StructKind::Record(fields) => syn::Item::Struct(syn::ItemStruct {
                         attrs: not_implemented!(vec![], "attrs for struct item"),
                         vis: self.compile_vis(strukt.visibility()),
@@ -178,7 +179,7 @@ impl CrustCompiler {
                         fields: syn::Fields::Unit,
                         semi_token: None,
                     })
-                });
+                }
             }
             Item::Trait(_) => todo!(),
             Item::TraitAlias(_trait_alias) => todo!(),
@@ -233,15 +234,32 @@ impl CrustCompiler {
         }
     }
 
-    fn compile_stmt<'a>(&self, _sem: &'a Semantics<'a, RootDatabase>, _stmt: &Stmt) -> syn::Stmt {
-        not_implemented!(syn::Stmt::Expr(syn::Expr::Tuple(syn::ExprTuple {
-            attrs: vec![],
-            paren_token: syn::token::Paren::default(),
-            elems: syn::punctuated::Punctuated::default(),
-        }), Some(<syn::Token![;]>::default())), "compile_stmt not implemented")
+    fn compile_stmt<'a>(&self, sem: &'a Semantics<'a, RootDatabase>, stmt: &Stmt) -> syn::Stmt {
+        match stmt {
+            Stmt::ExprStmt(expr) => syn::Stmt::Expr(
+                self.compile_expr(sem, &expr.expr().unwrap()),
+                Some(<syn::Token![;]>::default())
+            ),
+            Stmt::Item(item) => syn::Stmt::Item(self.compile_item(sem, item)),
+            Stmt::LetStmt(let_stmt) => syn::Stmt::Local(syn::Local {
+                attrs: not_implemented!(vec![], "attrs for let stmt"),
+                let_token: <syn::Token![let]>::default(),
+                pat: self.compile_pat(let_stmt.pat().unwrap()),
+                init: let_stmt.initializer().map(|init| syn::LocalInit {
+                    eq_token: <syn::Token![=]>::default(),
+                    expr: Box::new(self.compile_expr(sem, &init)),
+                    diverge: let_stmt.let_else().map(|le| (<syn::Token![else]>::default(), Box::new(syn::Expr::Block(syn::ExprBlock {
+                        attrs: not_implemented!(vec![], "attrs for else block of let-else stmt"),
+                        label: None, // TODO??
+                        block: self.compile_block(sem, &le.block_expr().unwrap()),
+                    })))),
+                }),
+                semi_token: <syn::Token![;]>::default(),
+            }),
+        }
     }
 
-    fn compile_expr<'a>(&self, _sem: &'a Semantics<'a, RootDatabase>, _stmt: &Expr) -> syn::Expr {
+    fn compile_expr<'a>(&self, _sem: &'a Semantics<'a, RootDatabase>, _expr: &Expr) -> syn::Expr {
         not_implemented!(syn::Expr::Tuple(syn::ExprTuple {
             attrs: vec![],
             paren_token: syn::token::Paren::default(),
@@ -479,7 +497,7 @@ fn main() {
     let ast = sem.parse(EditionedFileId::new(&db, file_id, ra_ap_syntax::Edition::Edition2021));
 
     for item in ast.items() {
-        compiler.compile_item(&sem, item);
+        compiler.outfile.items.push(compiler.compile_item(&sem, &item));
     }
 
     let file_tokens = compiler.outfile.into_token_stream();
