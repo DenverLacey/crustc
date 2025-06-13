@@ -1,20 +1,19 @@
-#![allow(unused)]
-
-use quote::{ToTokens, quote};
-use std::{
-    collections::HashMap, default, env, ffi::{c_char, CStr, CString, OsString}, io::Write, fs::File, path::Path, process::Command, ptr, str::FromStr, sync::{Arc, Mutex}, time::Duration
+use quote::ToTokens;
+use ra_ap_base_db::{
+    salsa::Durability, BuiltCrateData, Crate, CrateOrigin, CrateWorkspaceData,
+    Env, ExtraCrateData, FileSet, RootQueryDb, SourceDatabase, SourceRoot,
+    SourceRootId,
 };
-
-use syn::{self, token::Default, Token};
-
-use ra_ap_vfs::{VfsPath, Vfs};
-use ra_ap_vfs_notify::NotifyHandle;
-use ra_ap_base_db::{salsa::Durability, BuiltCrateData, Crate, CrateGraphBuilder, CrateOrigin, CrateWorkspaceData, Env, ExtraCrateData, FileId, FileSet, LangCrateOrigin, RootQueryDb, SourceDatabase, SourceRoot, SourceRootId};
-use ra_ap_ide_db::{symbol_index::SymbolsDatabase, LineIndexDatabase, RootDatabase};
-use ra_ap_hir::{db::HirDatabase, CfgOptions, EditionedFileId, ModuleDef, Semantics, Symbol};
-use ra_ap_syntax::{ast::{Expr, HasAttrs, HasModuleItem, HasName, HasVisibility, Item, Stmt, Visibility, VisibilityKind}, AstNode, SourceFile, SyntaxNode};
-use ra_ap_paths::{AbsPathBuf, Utf8PathBuf};
-use std::path::PathBuf;
+use ra_ap_hir::{sym::default, CfgOptions, EditionedFileId, Semantics, Symbol};
+use ra_ap_ide_db::RootDatabase;
+use ra_ap_paths::AbsPathBuf;
+use ra_ap_syntax::{ast::{
+    BlockExpr, Expr, HasModuleItem, HasName, HasVisibility, Item, Pat, Stmt, Type, Visibility, VisibilityKind
+}, AstNode, TextRange};
+use ra_ap_vfs::{Vfs, VfsPath};
+use std::{
+    default, env, ffi::OsString, fs::File, io::Write, process::Command
+};
 
 macro_rules! not_implemented {
     () => {{
@@ -84,35 +83,47 @@ impl CrustCompiler {
                 }));
             }
             Item::Enum(_) => todo!(),
-            Item::ExternBlock(extern_block) => todo!(),
-            Item::ExternCrate(extern_crate) => todo!(),
+            Item::ExternBlock(_extern_block) => todo!(),
+            Item::ExternCrate(_extern_crate) => todo!(),
             Item::Fn(func) => {
-                let name = func.name().unwrap().text().to_string();
-                println!("func: {name}");
-
-                let body = func.body().unwrap();
-                for stmt in body.statements() {
-                    match stmt {
-                        Stmt::ExprStmt(expr) => {
-                            let expr = expr.expr().unwrap();
-                            let ty = sem.type_of_expr(&expr).unwrap();
-                            println!("`{expr}` :: {ty:#?}");
-                        }
-                        Stmt::Item(item) => todo!(),
-                        Stmt::LetStmt(let_stmt) => todo!(),
-                    }
-                }
-
-                if let Some(expr) = body.tail_expr() {
-                    let ty = sem.type_of_expr(&expr).unwrap();
-                    println!("`{expr}` :: {ty:#?}");
-                }
+                let Some(body) = func.body() else {
+                    todo!("bodiless functions");
+                };
+                self.outfile.items.push(syn::Item::Fn(syn::ItemFn {
+                    attrs: not_implemented!(vec![], "attrs for fn items"),
+                    vis: self.compile_vis(func.visibility()),
+                    sig: syn::Signature {
+                        constness: func.const_token().map(|_| <syn::Token![const]>::default()),
+                        asyncness: func.async_token().map(|_| <syn::Token![async]>::default()),
+                        unsafety: Some(<syn::Token![unsafe]>::default()),
+                        abi: func.abi().map(|abi| syn::Abi {
+                            extern_token: <syn::Token![extern]>::default(),
+                            name: abi.abi_string().map(|name| syn::LitStr::new(&name.to_string(), proc_macro2::Span::call_site())),
+                        }),
+                        fn_token: <syn::Token![fn]>::default(),
+                        ident: syn::Ident::new(&func.name().unwrap().text().to_string(), proc_macro2::Span::call_site()),
+                        generics: not_implemented!(syn::Generics::default(), "generics for fn items"),
+                        paren_token: syn::token::Paren::default(),
+                        inputs: func.param_list().unwrap().params().map(|p| syn::FnArg::Typed(syn::PatType {
+                            attrs: not_implemented!(vec![], "attrs for FnArg"),
+                            pat: Box::new(self.compile_pat(p.pat().unwrap())),
+                            colon_token: <syn::Token![:]>::default(),
+                            ty: Box::new(self.compile_type(sem, p.ty().unwrap())),
+                        })).collect(),
+                        variadic: not_implemented!(None, "variadic arguments"),
+                        output: func.ret_type().map_or(syn::ReturnType::Default, |ret| syn::ReturnType::Type(
+                            <syn::Token![->]>::default(),
+                            Box::new(self.compile_type(sem, ret.ty().unwrap()))
+                        )),
+                    },
+                    block: Box::new(self.compile_block(sem, &body)),
+                }));
             }
             Item::Impl(_) => todo!(),
-            Item::MacroCall(macro_call) => todo!(),
-            Item::MacroDef(macro_def) => todo!(),
-            Item::MacroRules(macro_rules) => todo!(),
-            Item::Module(module) => todo!(),
+            Item::MacroCall(_macro_call) => todo!(),
+            Item::MacroDef(_macro_def) => todo!(),
+            Item::MacroRules(_macro_rules) => todo!(),
+            Item::Module(_module) => todo!(),
             Item::Static(_) => todo!(),
             Item::Struct(strukt) => {
                 let ident = syn::Ident::new(Box::leak(strukt.name().unwrap().text().to_string().into_boxed_str()), proc_macro2::Span::call_site());
@@ -134,7 +145,7 @@ impl CrustCompiler {
                                     proc_macro2::Span::call_site(),
                                 )),
                                 colon_token: Some(<syn::Token![:]>::default()),
-                                ty: self.compile_type(f.ty().unwrap()),
+                                ty: self.compile_type(sem, f.ty().unwrap()),
                             }).collect(),
                         }) ,
                         semi_token: None,
@@ -153,7 +164,7 @@ impl CrustCompiler {
                                 mutability: not_implemented!(syn::FieldMutability::None, "mutability of unnamed fields"),
                                 ident: None,
                                 colon_token: None,
-                                ty: self.compile_type(f.ty().unwrap()),
+                                ty: self.compile_type(sem, f.ty().unwrap()),
                             }).collect(),
                         }),
                         semi_token: None,
@@ -163,16 +174,16 @@ impl CrustCompiler {
                         vis: self.compile_vis(strukt.visibility()),
                         struct_token: <syn::Token![struct]>::default(),
                         ident,
-                        generics: todo!(),
+                        generics: not_implemented!(syn::Generics::default(), "generics for struct item"),
                         fields: syn::Fields::Unit,
                         semi_token: None,
                     })
                 });
             }
             Item::Trait(_) => todo!(),
-            Item::TraitAlias(trait_alias) => todo!(),
-            Item::TypeAlias(type_alias) => todo!(),
-            Item::Union(union) => todo!(),
+            Item::TraitAlias(_trait_alias) => todo!(),
+            Item::TypeAlias(_type_alias) => todo!(),
+            Item::Union(_union) => todo!(),
             Item::Use(_) => todo!(),
         }
     }
@@ -211,7 +222,18 @@ impl CrustCompiler {
         }
     }
 
-    fn compile_stmt<'a>(&self, sem: &'a Semantics<'a, RootDatabase>, stmt: &Stmt) -> syn::Stmt {
+    fn compile_block<'a>(&self, _sem: &'a Semantics<'a, RootDatabase>, block: &BlockExpr) -> syn::Block {
+        syn::Block {
+            brace_token: syn::token::Brace::default(),
+            stmts: block
+                .statements()
+                .map(|stmt| self.compile_stmt(_sem, &stmt))
+                .chain(block.tail_expr().map(|expr| syn::Stmt::Expr(self.compile_expr(_sem, &expr), None)))
+                .collect(),
+        }
+    }
+
+    fn compile_stmt<'a>(&self, _sem: &'a Semantics<'a, RootDatabase>, _stmt: &Stmt) -> syn::Stmt {
         not_implemented!(syn::Stmt::Expr(syn::Expr::Tuple(syn::ExprTuple {
             attrs: vec![],
             paren_token: syn::token::Paren::default(),
@@ -219,7 +241,7 @@ impl CrustCompiler {
         }), Some(<syn::Token![;]>::default())), "compile_stmt not implemented")
     }
 
-    fn compile_expr<'a>(&self, sem: &'a Semantics<'a, RootDatabase>, stmt: &Expr) -> syn::Expr {
+    fn compile_expr<'a>(&self, _sem: &'a Semantics<'a, RootDatabase>, _stmt: &Expr) -> syn::Expr {
         not_implemented!(syn::Expr::Tuple(syn::ExprTuple {
             attrs: vec![],
             paren_token: syn::token::Paren::default(),
@@ -227,10 +249,47 @@ impl CrustCompiler {
         }), "compile_expr not implemented")
     }
 
-    fn compile_type(&self, ty: ra_ap_syntax::ast::Type) -> syn::Type {
-        not_implemented!(syn::Type::Never(syn::TypeNever {
-            bang_token: <syn::Token![!]>::default(),
-        }), "compile_type not implemented")
+    fn compile_type<'a>(&self, sem: &'a Semantics<'a, RootDatabase>, ty: Type) -> syn::Type {
+        match ty {
+            Type::ArrayType(arr_ty) => syn::Type::Array(syn::TypeArray {
+                bracket_token: syn::token::Bracket::default(),
+                elem: Box::new(self.compile_type(sem, arr_ty.ty().unwrap())),
+                semi_token: <syn::Token![;]>::default(),
+                len: self.compile_expr(sem, &arr_ty.const_arg().unwrap().expr().unwrap()),
+            }),
+            Type::DynTraitType(_dyn_trait_type) => todo!(),
+            Type::FnPtrType(_fn_ptr_type) => todo!(),
+            Type::ForType(_for_type) => todo!(),
+            Type::ImplTraitType(_impl_trait_type) => todo!(),
+            Type::InferType(_infer_type) => todo!(),
+            Type::MacroType(_macro_type) => todo!(),
+            Type::NeverType(..) => syn::Type::Never(syn::TypeNever {
+                bang_token: <syn::Token![!]>::default(),
+            }),
+            Type::ParenType(_paren_type) => todo!(),
+            Type::PathType(path_ty) => syn::Type::Path(syn::TypePath {
+                qself: None, // TODO
+                path: self.compile_path(path_ty.path().unwrap()),
+            }),
+            Type::PtrType(ptr_ty) => syn::Type::Ptr(syn::TypePtr {
+                star_token: <syn::Token![*]>::default(),
+                const_token: ptr_ty.const_token().map(|_| <syn::Token![const]>::default()),
+                mutability: ptr_ty.mut_token().map(|_| <syn::Token![mut]>::default()),
+                elem: Box::new(self.compile_type(sem, ptr_ty.ty().unwrap())),
+            }),
+            Type::RefType(ref_ty) => {
+                self.report_reference_type(ref_ty.syntax().text_range());
+                std::process::exit(0); // TODO: Something better
+            }
+            Type::SliceType(slice_ty) => syn::Type::Slice(syn::TypeSlice {
+                bracket_token: syn::token::Bracket::default(),
+                elem: Box::new(self.compile_type(sem, slice_ty.ty().unwrap())),
+            }),
+            Type::TupleType(tup_ty) => syn::Type::Tuple(syn::TypeTuple {
+                paren_token: syn::token::Paren::default(),
+                elems: tup_ty.fields().map(|ty| self.compile_type(sem, ty)).collect(),
+            }),
+        }
     }
 
     fn compile_path(&self, path: ra_ap_syntax::ast::Path) -> syn::Path {
@@ -246,34 +305,67 @@ impl CrustCompiler {
                         }
                     }
                     ra_ap_syntax::ast::PathSegmentKind::Type { type_ref, trait_ref } => todo!(),
-                    ra_ap_syntax::ast::PathSegmentKind::SelfTypeKw => todo!(),
+                    ra_ap_syntax::ast::PathSegmentKind::SelfTypeKw => syn::PathSegment {
+                        ident: syn::Ident::new("Self", proc_macro2::Span::call_site()), // NOTE: I think this is right
+                        arguments: syn::PathArguments::None,
+                    },
                     ra_ap_syntax::ast::PathSegmentKind::SelfKw => syn::PathSegment {
                         ident: syn::Ident::new("self", proc_macro2::Span::call_site()),
-                        arguments: syn::PathArguments::None
+                        arguments: syn::PathArguments::None,
                     },
                     ra_ap_syntax::ast::PathSegmentKind::SuperKw => syn::PathSegment {
                         ident: syn::Ident::new("super", proc_macro2::Span::call_site()),
-                        arguments: syn::PathArguments::None
+                        arguments: syn::PathArguments::None,
                     },
                     ra_ap_syntax::ast::PathSegmentKind::CrateKw => syn::PathSegment {
                         ident: syn::Ident::new("crate", proc_macro2::Span::call_site()),
-                        arguments: syn::PathArguments::None
+                        arguments: syn::PathArguments::None,
                     },
                 }
             }).collect(),
         }
     }
+
+    fn compile_pat(&self, pat: Pat) -> syn::Pat {
+        match pat {
+            Pat::BoxPat(_box_pat) => todo!(),
+            Pat::ConstBlockPat(_const_block_pat) => todo!(),
+            Pat::IdentPat(id) => syn::Pat::Ident(syn::PatIdent {
+                attrs: not_implemented!(vec![], "attrs for ident pat"),
+                by_ref: id.ref_token().map(|_| <syn::Token![ref]>::default()),
+                mutability: id.mut_token().map(|_| <syn::Token![mut]>::default()),
+                ident: syn::Ident::new(&id.name().unwrap().text().to_string(), proc_macro2::Span::call_site()),
+                subpat: id.at_token().map(|_| todo!()),
+            }),
+            Pat::LiteralPat(_literal_pat) => todo!(),
+            Pat::MacroPat(_macro_pat) => todo!(),
+            Pat::OrPat(_or_pat) => todo!(),
+            Pat::ParenPat(_paren_pat) => todo!(),
+            Pat::PathPat(_path_pat) => todo!(),
+            Pat::RangePat(_range_pat) => todo!(),
+            Pat::RecordPat(_record_pat) => todo!(),
+            Pat::RefPat(_ref_pat) => todo!(),
+            Pat::RestPat(_rest_pat) => todo!(),
+            Pat::SlicePat(_slice_pat) => todo!(),
+            Pat::TuplePat(_tuple_pat) => todo!(),
+            Pat::TupleStructPat(_tuple_struct_pat) => todo!(),
+            Pat::WildcardPat(_wildcard_pat) => syn::Pat::Wild(syn::PatWild {
+                attrs: not_implemented!(vec![], "attrs for wild card pat"),
+                underscore_token: <syn::Token![_]>::default(),
+            }),
+        }
+    }
 }
 
 impl CrustCompiler {
-    fn report_reference_type(&self, span: std::ops::Range<usize>) {
+    fn report_reference_type(&self, span: TextRange) {
         use annotate_snippets::{Level, Renderer, Snippet};
 
         let message = Level::Error.title("reference type used").snippet(
             Snippet::source(self.source.as_str())
                 .origin(self.source_filename.as_str())
                 .annotation(Level::Error
-                    .span(span.clone())
+                    .span(span.start().into()..span.end().into())
                     .label("reference types are not allowed in crust"))
         )
         .footer(Level::Help.title("try using pointers"));
@@ -352,7 +444,7 @@ fn main() {
 
     let mut fileset = FileSet::default();
     fileset.insert(file_id, virutal_path);
-    let mut source_root = SourceRoot::new_local(fileset);
+    let source_root = SourceRoot::new_local(fileset);
 
     let mut db = RootDatabase::default();
     db.set_file_text(file_id, compiler.source.as_str());
@@ -394,7 +486,7 @@ fn main() {
 
     let generated_filepath = format!("{}.generated.rs", file);
     let mut out = File::create(&generated_filepath).unwrap();
-    write!(out, "{file_tokens}");
+    write!(out, "{file_tokens}").unwrap();
 
     Command::new("rustfmt")
         .args([OsString::from(generated_filepath)])
