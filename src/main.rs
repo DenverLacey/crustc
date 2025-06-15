@@ -8,26 +8,24 @@ use ra_ap_ide_db::RootDatabase;
 use ra_ap_paths::AbsPathBuf;
 use ra_ap_syntax::{
     ast::{
-        BlockExpr, Expr, HasArgList, HasAttrs, HasLoopBody, HasModuleItem, HasName, HasVisibility, Item, Pat, Stmt, Type, Visibility, VisibilityKind
+        BlockExpr, Expr, HasArgList, HasAttrs, HasLoopBody, HasModuleItem, HasName, HasVisibility,
+        Item, Pat, RecordFieldList, Stmt, TupleFieldList, Type, Visibility, VisibilityKind,
     },
     AstNode, AstToken, TextRange,
 };
 use ra_ap_vfs::{Vfs, VfsPath};
-use syn::Attribute;
 use std::{
-    default, env, ffi::{CString, OsString}, fs::File, io::Write, process::Command
+    env,
+    ffi::{CString, OsString},
+    fs::File,
+    io::Write,
+    process::Command,
 };
 
-macro_rules! not_implemented {
-    () => {{
-        println!("{}:{}: TODO: Not yet implemented.", file!(), line!());
-    }};
-    ($fmt:literal $($args:tt)?) => {{
+macro_rules! stub {
+    ($default:expr $(, $msg:tt)?) => {{
         print!("{}:{}: TODO: ", file!(), line!());
-        println!($fmt $($args)?);
-    }};
-    ($default:expr, $fmt:literal $($args:tt)?) => {{
-        not_implemented!($fmt $($args)?);
+        $(println!($msg);)?
         $default
     }};
 }
@@ -43,7 +41,7 @@ struct FailedToOpenSourceFile;
 impl CrustCompiler {
     fn new(filename: impl Into<String>) -> Result<Self, FailedToOpenSourceFile> {
         let filename = filename.into();
-        Ok(Self  {
+        Ok(Self {
             source: std::fs::read_to_string(&filename).or(Err(FailedToOpenSourceFile))?,
             source_filename: filename,
             outfile: syn::File {
@@ -74,15 +72,31 @@ impl CrustCompiler {
                     vis,
                     const_token: <syn::Token![const]>::default(),
                     ident: syn::Ident::new(&name, proc_macro2::Span::call_site()),
-                    generics: not_implemented!(syn::Generics::default(), "generics for const item"),
+                    generics: self.compile_generics((), ()),
                     colon_token: <syn::Token![:]>::default(),
-                    ty: not_implemented!(Box::new(syn::Type::Never(syn::TypeNever { bang_token: <syn::Token![!]>::default() })), "ty for const item"),
+                    ty: Box::new(self.compile_type(sem, konst.ty().unwrap())),
                     eq_token: <syn::Token![=]>::default(),
                     expr: Box::new(expr),
                     semi_token: <syn::Token![;]>::default(),
                 })
             }
-            Item::Enum(_) => todo!(),
+            Item::Enum(enom) => syn::Item::Enum(syn::ItemEnum {
+                attrs: self.compile_attrs(enom.attrs()).chain([syn::parse_quote! { #[derive(Clone, Copy)] }].into_iter()).collect(),
+                vis: self.compile_vis(enom.visibility()),
+                enum_token: <syn::Token![enum]>::default(),
+                ident: syn::Ident::new(&enom.name().unwrap().text().to_string(), proc_macro2::Span::call_site()),
+                generics: self.compile_generics((), ()),
+                brace_token: syn::token::Brace::default(),
+                variants: enom.variant_list().unwrap().variants().map(|variant| syn::Variant {
+                    attrs: self.compile_attrs(variant.attrs()).collect(),
+                    ident: syn::Ident::new(&variant.name().unwrap().text().to_string(), proc_macro2::Span::call_site()),
+                    fields: variant.field_list().map_or(syn::Fields::Unit, |fields| match fields {
+                        ra_ap_syntax::ast::FieldList::RecordFieldList(fields) => self.compile_record_fields(sem, fields),
+                        ra_ap_syntax::ast::FieldList::TupleFieldList(fields) => self.compile_tuple_fields(sem, fields),
+                    }),
+                    discriminant: variant.expr().map(|expr| (<syn::Token![=]>::default(), self.compile_expr(sem, &expr))),
+                }).collect(),
+            }),
             Item::ExternBlock(_extern_block) => todo!(),
             Item::ExternCrate(_extern_crate) => todo!(),
             Item::Fn(func) => {
@@ -102,7 +116,7 @@ impl CrustCompiler {
                         }),
                         fn_token: <syn::Token![fn]>::default(),
                         ident: syn::Ident::new(&func.name().unwrap().text().to_string(), proc_macro2::Span::call_site()),
-                        generics: not_implemented!(syn::Generics::default(), "generics for fn items"),
+                        generics: self.compile_generics((), ()),
                         paren_token: syn::token::Paren::default(),
                         inputs: func.param_list().unwrap().params().map(|p| syn::FnArg::Typed(syn::PatType {
                             attrs: self.compile_attrs(p.attrs()).collect(),
@@ -110,7 +124,7 @@ impl CrustCompiler {
                             colon_token: <syn::Token![:]>::default(),
                             ty: Box::new(self.compile_type(sem, p.ty().unwrap())),
                         })).collect(),
-                        variadic: not_implemented!(None, "variadic arguments"),
+                        variadic: stub!(None, "variadic arguments"),
                         output: func.ret_type().map_or(syn::ReturnType::Default, |ret| syn::ReturnType::Type(
                             <syn::Token![->]>::default(),
                             Box::new(self.compile_type(sem, ret.ty().unwrap()))
@@ -133,48 +147,25 @@ impl CrustCompiler {
                         vis: self.compile_vis(strukt.visibility()),
                         struct_token: <syn::Token![struct]>::default(),
                         ident,
-                        generics: not_implemented!(syn::Generics::default(), "generics for struct item"),
-                        fields: syn::Fields::Named(syn::FieldsNamed {
-                            brace_token: syn::token::Brace::default(),
-                            named: fields.fields().map(|f| syn::Field {
-                                attrs: self.compile_attrs(f.attrs()).collect(),
-                                vis: self.compile_vis(f.visibility()),
-                                mutability: not_implemented!(syn::FieldMutability::None, "mutability of named fields"),
-                                ident: f.name().map(|name| syn::Ident::new(
-                                    Box::leak(name.text().to_string().into_boxed_str()),
-                                    proc_macro2::Span::call_site(),
-                                )),
-                                colon_token: Some(<syn::Token![:]>::default()),
-                                ty: self.compile_type(sem, f.ty().unwrap()),
-                            }).collect(),
-                        }) ,
+                        generics: self.compile_generics((), ()),
+                        fields: self.compile_record_fields(sem, fields),
                         semi_token: None,
                     }),
                     ra_ap_syntax::ast::StructKind::Tuple(fields) => syn::Item::Struct(syn::ItemStruct {
-                        attrs: self.compile_attrs(strukt.attrs()).collect(),
+                        attrs: self.compile_attrs(strukt.attrs()).chain([syn::parse_quote! { #[derive(Clone, Copy)] }].into_iter()).collect(),
                         vis: self.compile_vis(strukt.visibility()),
                         struct_token: <syn::Token![struct]>::default(),
                         ident,
-                        generics: not_implemented!(syn::Generics::default(), "generics for struct item"),
-                        fields: syn::Fields::Unnamed(syn::FieldsUnnamed {
-                            paren_token: syn::token::Paren::default(),
-                            unnamed: fields.fields().map(|f| syn::Field {
-                                attrs: self.compile_attrs(f.attrs()).collect(),
-                                vis: self.compile_vis(f.visibility()),
-                                mutability: not_implemented!(syn::FieldMutability::None, "mutability of unnamed fields"),
-                                ident: None,
-                                colon_token: None,
-                                ty: self.compile_type(sem, f.ty().unwrap()),
-                            }).collect(),
-                        }),
+                        generics: self.compile_generics((), ()),
+                        fields: self.compile_tuple_fields(sem, fields),
                         semi_token: None,
                     }),
                     ra_ap_syntax::ast::StructKind::Unit => syn::Item::Struct(syn::ItemStruct {
-                        attrs: self.compile_attrs(strukt.attrs()).collect(),
+                        attrs: self.compile_attrs(strukt.attrs()).chain([syn::parse_quote! { #[derive(Clone, Copy)] }].into_iter()).collect(),
                         vis: self.compile_vis(strukt.visibility()),
                         struct_token: <syn::Token![struct]>::default(),
                         ident,
-                        generics: not_implemented!(syn::Generics::default(), "generics for struct item"),
+                        generics: self.compile_generics((), ()),
                         fields: syn::Fields::Unit,
                         semi_token: None,
                     })
@@ -573,6 +564,41 @@ impl CrustCompiler {
                 let meta_stream: proc_macro2::TokenStream = meta.to_string().parse().unwrap();
                 syn::parse_quote! { #meta_stream }
             }).expect("No Meta info found for attribute"),
+        })
+    }
+
+    fn compile_generics(&self, _generics: (), _where_clause: ()) -> syn::Generics {
+        stub!(syn::Generics::default(), "compile_generics() not implemented")
+    }
+
+    fn compile_record_fields<'a>(&self, sem: &'a Semantics<'a, RootDatabase>, fields: RecordFieldList) -> syn::Fields {
+        syn::Fields::Named(syn::FieldsNamed {
+            brace_token: syn::token::Brace::default(),
+            named: fields.fields().map(|f| syn::Field {
+                attrs: self.compile_attrs(f.attrs()).collect(),
+                vis: self.compile_vis(f.visibility()),
+                mutability: stub!(syn::FieldMutability::None, "mutability of named fields"),
+                ident: f.name().map(|name| syn::Ident::new(
+                    Box::leak(name.text().to_string().into_boxed_str()),
+                    proc_macro2::Span::call_site(),
+                )),
+                colon_token: Some(<syn::Token![:]>::default()),
+                ty: self.compile_type(sem, f.ty().unwrap()),
+            }).collect(),
+        })
+    }
+
+    fn compile_tuple_fields<'a>(&self, sem: &'a Semantics<'a, RootDatabase>, fields: TupleFieldList) -> syn::Fields {
+        syn::Fields::Unnamed(syn::FieldsUnnamed {
+            paren_token: syn::token::Paren::default(),
+            unnamed: fields.fields().map(|f| syn::Field {
+                attrs: self.compile_attrs(f.attrs()).collect(),
+                vis: self.compile_vis(f.visibility()),
+                mutability: stub!(syn::FieldMutability::None, "mutability of unnamed fields"),
+                ident: None,
+                colon_token: None,
+                ty: self.compile_type(sem, f.ty().unwrap()),
+            }).collect(),
         })
     }
 }
