@@ -1,4 +1,5 @@
-fn main() {
-    let s = "hello there";
+#[repr(C)]
+struct Foo {
+    blah: i23,
 }
 

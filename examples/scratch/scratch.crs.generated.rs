@@ -1,4 +1,6 @@
 #![no_std]
-pub unsafe fn main() {
-    let s = c"hello there".as_ptr();
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Foo {
+    pub blah: i23,
 }

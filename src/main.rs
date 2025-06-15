@@ -8,18 +8,14 @@ use ra_ap_ide_db::RootDatabase;
 use ra_ap_paths::AbsPathBuf;
 use ra_ap_syntax::{
     ast::{
-        BlockExpr, Expr, HasModuleItem, HasName, HasVisibility, Item, Pat, Stmt, Type, Visibility,
-        VisibilityKind,
+        BlockExpr, Expr, HasArgList, HasAttrs, HasLoopBody, HasModuleItem, HasName, HasVisibility, Item, Pat, Stmt, Type, Visibility, VisibilityKind
     },
     AstNode, AstToken, TextRange,
 };
 use ra_ap_vfs::{Vfs, VfsPath};
+use syn::Attribute;
 use std::{
-    env,
-    ffi::{CString, OsString},
-    fs::File,
-    io::Write,
-    process::Command,
+    default, env, ffi::{CString, OsString}, fs::File, io::Write, process::Command
 };
 
 macro_rules! not_implemented {
@@ -33,7 +29,7 @@ macro_rules! not_implemented {
     ($default:expr, $fmt:literal $($args:tt)?) => {{
         not_implemented!($fmt $($args)?);
         $default
-    }}
+    }};
 }
 
 struct CrustCompiler {
@@ -41,9 +37,6 @@ struct CrustCompiler {
     source_filename: String,
     outfile: syn::File,
 }
-
-unsafe impl Send for CrustCompiler {}
-unsafe impl Sync for CrustCompiler {}
 
 struct FailedToOpenSourceFile;
 
@@ -77,7 +70,7 @@ impl CrustCompiler {
                 let expr = self.compile_expr(sem, &body);
 
                 syn::Item::Const(syn::ItemConst {
-                    attrs: not_implemented!(vec![], "attrs for const item"),
+                    attrs: self.compile_attrs(konst.attrs()).collect(),
                     vis,
                     const_token: <syn::Token![const]>::default(),
                     ident: syn::Ident::new(&name, proc_macro2::Span::call_site()),
@@ -97,7 +90,7 @@ impl CrustCompiler {
                     todo!("bodiless functions");
                 };
                 syn::Item::Fn(syn::ItemFn {
-                    attrs: not_implemented!(vec![], "attrs for fn items"),
+                    attrs: self.compile_attrs(func.attrs()).collect(),
                     vis: self.compile_vis(func.visibility()),
                     sig: syn::Signature {
                         constness: func.const_token().map(|_| <syn::Token![const]>::default()),
@@ -112,7 +105,7 @@ impl CrustCompiler {
                         generics: not_implemented!(syn::Generics::default(), "generics for fn items"),
                         paren_token: syn::token::Paren::default(),
                         inputs: func.param_list().unwrap().params().map(|p| syn::FnArg::Typed(syn::PatType {
-                            attrs: not_implemented!(vec![], "attrs for FnArg"),
+                            attrs: self.compile_attrs(p.attrs()).collect(),
                             pat: Box::new(self.compile_pat(p.pat().unwrap())),
                             colon_token: <syn::Token![:]>::default(),
                             ty: Box::new(self.compile_type(sem, p.ty().unwrap())),
@@ -136,7 +129,7 @@ impl CrustCompiler {
                 let ident = syn::Ident::new(Box::leak(strukt.name().unwrap().text().to_string().into_boxed_str()), proc_macro2::Span::call_site());
                 match strukt.kind() {
                     ra_ap_syntax::ast::StructKind::Record(fields) => syn::Item::Struct(syn::ItemStruct {
-                        attrs: not_implemented!(vec![], "attrs for struct item"),
+                        attrs: self.compile_attrs(strukt.attrs()).chain([syn::parse_quote!{ #[derive(Clone, Copy)] }].into_iter()).collect(),
                         vis: self.compile_vis(strukt.visibility()),
                         struct_token: <syn::Token![struct]>::default(),
                         ident,
@@ -144,7 +137,7 @@ impl CrustCompiler {
                         fields: syn::Fields::Named(syn::FieldsNamed {
                             brace_token: syn::token::Brace::default(),
                             named: fields.fields().map(|f| syn::Field {
-                                attrs: not_implemented!(vec![], "attrs for named fields"),
+                                attrs: self.compile_attrs(f.attrs()).collect(),
                                 vis: self.compile_vis(f.visibility()),
                                 mutability: not_implemented!(syn::FieldMutability::None, "mutability of named fields"),
                                 ident: f.name().map(|name| syn::Ident::new(
@@ -158,7 +151,7 @@ impl CrustCompiler {
                         semi_token: None,
                     }),
                     ra_ap_syntax::ast::StructKind::Tuple(fields) => syn::Item::Struct(syn::ItemStruct {
-                        attrs: not_implemented!(vec![], "attrs for struct item"),
+                        attrs: self.compile_attrs(strukt.attrs()).collect(),
                         vis: self.compile_vis(strukt.visibility()),
                         struct_token: <syn::Token![struct]>::default(),
                         ident,
@@ -166,7 +159,7 @@ impl CrustCompiler {
                         fields: syn::Fields::Unnamed(syn::FieldsUnnamed {
                             paren_token: syn::token::Paren::default(),
                             unnamed: fields.fields().map(|f| syn::Field {
-                                attrs: not_implemented!(vec![], "attrs for unnamed fields"),
+                                attrs: self.compile_attrs(f.attrs()).collect(),
                                 vis: self.compile_vis(f.visibility()),
                                 mutability: not_implemented!(syn::FieldMutability::None, "mutability of unnamed fields"),
                                 ident: None,
@@ -177,7 +170,7 @@ impl CrustCompiler {
                         semi_token: None,
                     }),
                     ra_ap_syntax::ast::StructKind::Unit => syn::Item::Struct(syn::ItemStruct {
-                        attrs: not_implemented!(vec![], "attrs for struct item"),
+                        attrs: self.compile_attrs(strukt.attrs()).collect(),
                         vis: self.compile_vis(strukt.visibility()),
                         struct_token: <syn::Token![struct]>::default(),
                         ident,
@@ -248,14 +241,14 @@ impl CrustCompiler {
             ),
             Stmt::Item(item) => syn::Stmt::Item(self.compile_item(sem, item)),
             Stmt::LetStmt(let_stmt) => syn::Stmt::Local(syn::Local {
-                attrs: not_implemented!(vec![], "attrs for let stmt"),
+                attrs: self.compile_attrs(let_stmt.attrs()).collect(),
                 let_token: <syn::Token![let]>::default(),
                 pat: self.compile_pat(let_stmt.pat().unwrap()),
                 init: let_stmt.initializer().map(|init| syn::LocalInit {
                     eq_token: <syn::Token![=]>::default(),
                     expr: Box::new(self.compile_expr(sem, &init)),
                     diverge: let_stmt.let_else().map(|le| (<syn::Token![else]>::default(), Box::new(syn::Expr::Block(syn::ExprBlock {
-                        attrs: not_implemented!(vec![], "attrs for else block of let-else stmt"),
+                        attrs: vec![],
                         label: None, // TODO??
                         block: self.compile_block(sem, &le.block_expr().unwrap()),
                     })))),
@@ -272,23 +265,45 @@ impl CrustCompiler {
             Expr::AwaitExpr(_await_expr) => todo!(),
             Expr::BecomeExpr(_become_expr) => todo!(),
             Expr::BinExpr(_bin_expr) => todo!(),
-            Expr::BlockExpr(_block_expr) => todo!(),
-            Expr::BreakExpr(_break_expr) => todo!(),
-            Expr::CallExpr(_call_expr) => todo!(),
+            Expr::BlockExpr(block) => syn::Expr::Block(syn::ExprBlock {
+                attrs: self.compile_attrs(block.attrs()).collect(),
+                label: self.compile_label(block.label()),
+                block: self.compile_block(sem, block),
+            }),
+            Expr::BreakExpr(break_expr) => syn::Expr::Break(syn::ExprBreak {
+                attrs: self.compile_attrs(break_expr.attrs()).collect(),
+                break_token: <syn::Token![break]>::default(),
+                label: break_expr.lifetime().map(|lt| self.compile_lifetime(lt)),
+                expr: break_expr.expr().map(|expr| Box::new(self.compile_expr(sem, &expr))),
+            }),
+            Expr::CallExpr(call) => syn::Expr::Call(syn::ExprCall {
+                attrs: self.compile_attrs(call.attrs()).collect(),
+                func: Box::new(self.compile_expr(sem, &call.expr().unwrap())),
+                paren_token: syn::token::Paren::default(),
+                args: call.arg_list().unwrap().args().map(|arg| self.compile_expr(sem, &arg)).collect(),
+            }),
             Expr::CastExpr(_cast_expr) => todo!(),
             Expr::ClosureExpr(_closure_expr) => todo!(),
             Expr::ContinueExpr(_continue_expr) => todo!(),
             Expr::FieldExpr(_field_expr) => todo!(),
-            Expr::ForExpr(_for_expr) => todo!(),
+            Expr::ForExpr(for_expr) => syn::Expr::ForLoop(syn::ExprForLoop {
+                attrs: self.compile_attrs(for_expr.attrs()).collect(),
+                label: self.compile_label(for_expr.label()),
+                for_token: <syn::Token![for]>::default(),
+                pat: Box::new(self.compile_pat(for_expr.pat().unwrap())),
+                in_token: <syn::Token![in]>::default(),
+                expr: Box::new(self.compile_expr(sem, &for_expr.iterable().unwrap())),
+                body: self.compile_block(sem, &for_expr.loop_body().unwrap()),
+            }),
             Expr::FormatArgsExpr(_format_args_expr) => todo!(),
-            Expr::IfExpr(_if_expr) => todo!(),
+            Expr::IfExpr(if_expr) => syn::Expr::If(self.compile_if(sem, if_expr)),
             Expr::IndexExpr(_index_expr) => todo!(),
             Expr::LetExpr(_let_expr) => todo!(),
             Expr::Literal(lit) => match lit.kind() {
                 ra_ap_syntax::ast::LiteralKind::String(s) => syn::Expr::MethodCall(syn::ExprMethodCall {
                     attrs: vec![],
                     receiver: Box::new(syn::Expr::Lit(syn::ExprLit {
-                        attrs: not_implemented!(vec![], "attrs lit string expr"),
+                        attrs: vec![],
                         lit: syn::Lit::CStr(syn::LitCStr::new(
                             CString::new(s.value().expect("bad escape character").bytes().collect::<Vec<_>>()).expect("null byte in string").as_c_str(),
                             proc_macro2::Span::call_site()
@@ -301,45 +316,54 @@ impl CrustCompiler {
                     args: syn::punctuated::Punctuated::new(),
                 }),
                 ra_ap_syntax::ast::LiteralKind::ByteString(bs) => syn::Expr::Lit(syn::ExprLit {
-                    attrs: not_implemented!(vec![], "attrs lit byte string expr"),
+                    attrs: vec![],
                     lit: syn::Lit::ByteStr(syn::LitByteStr::new(bs.value().expect("bad escape character").as_ref(), proc_macro2::Span::call_site())),
                 }),
                 ra_ap_syntax::ast::LiteralKind::CString(cs) => syn::Expr::Lit(syn::ExprLit {
-                    attrs: not_implemented!(vec![], "attrs lit cstring expr"),
+                    attrs: vec![],
                     lit: syn::Lit::CStr(syn::LitCStr::new(
                         CString::new(cs.value().expect("bad escape character")).expect("null byte in cstring").as_c_str(),
                         proc_macro2::Span::call_site(),
                     )),
                 }),
                 ra_ap_syntax::ast::LiteralKind::IntNumber(i) => syn::Expr::Lit(syn::ExprLit {
-                    attrs: not_implemented!(vec![], "attrs lit int expr"),
+                    attrs: vec![],
                     lit: syn::Lit::Int(syn::LitInt::new(i.text(), proc_macro2::Span::call_site())),
                 }),
                 ra_ap_syntax::ast::LiteralKind::FloatNumber(f) => syn::Expr::Lit(syn::ExprLit {
-                    attrs: not_implemented!(vec![], "attrs lit float expr"),
+                    attrs: vec![],
                     lit: syn::Lit::Float(syn::LitFloat::new(f.text(), proc_macro2::Span::call_site())),
                 }),
                 ra_ap_syntax::ast::LiteralKind::Char(c) => syn::Expr::Lit(syn::ExprLit {
-                    attrs: not_implemented!(vec![], "attrs lit char expr"),
+                    attrs: vec![],
                     lit: syn::Lit::Char(syn::LitChar::new(c.value().expect("bad escape character"), proc_macro2::Span::call_site())),
                 }),
                 ra_ap_syntax::ast::LiteralKind::Byte(b) => syn::Expr::Lit(syn::ExprLit {
-                    attrs: not_implemented!(vec![], "attrs lit byte expr"),
+                    attrs: vec![],
                     lit: syn::Lit::Byte(syn::LitByte::new(b.value().expect("bad escape character"), proc_macro2::Span::call_site())),
                 }),
                 ra_ap_syntax::ast::LiteralKind::Bool(b) => syn::Expr::Lit(syn::ExprLit {
-                    attrs: not_implemented!(vec![], "attrs lit bool expr"),
+                    attrs: vec![],
                     lit: syn::Lit::Bool(syn::LitBool::new(b, proc_macro2::Span::call_site())),
                 }),
             },
-            Expr::LoopExpr(_loop_expr) => todo!(),
+            Expr::LoopExpr(loop_expr) => syn::Expr::Loop(syn::ExprLoop {
+                attrs: self.compile_attrs(loop_expr.attrs()).collect(),
+                label: self.compile_label(loop_expr.label()),
+                loop_token: <syn::Token![loop]>::default(),
+                body: self.compile_block(sem, &loop_expr.loop_body().unwrap()),
+            }),
             Expr::MacroExpr(_macro_expr) => todo!(),
             Expr::MatchExpr(_match_expr) => todo!(),
             Expr::MethodCallExpr(_method_call_expr) => todo!(),
             Expr::OffsetOfExpr(_offset_of_expr) => todo!(),
-            Expr::ParenExpr(_paren_expr) => todo!(),
+            Expr::ParenExpr(paren) => syn::Expr::Paren(syn::ExprParen {
+                attrs: self.compile_attrs(paren.attrs()).collect(),
+                paren_token: syn::token::Paren::default(),
+                expr: Box::new(self.compile_expr(sem, &paren.expr().unwrap())),
+            }),
             Expr::PathExpr(path) => syn::Expr::Path(syn::PatPath {
-                attrs: not_implemented!(vec![], "attrs for path expr"),
+                attrs: self.compile_attrs(path.attrs()).collect(),
                 qself: None, // TODO
                 path: self.compile_path(path.path().unwrap()),
             }),
@@ -347,7 +371,7 @@ impl CrustCompiler {
             Expr::RangeExpr(_range_expr) => todo!(),
             Expr::RecordExpr(_record_expr) => todo!(),
             Expr::RefExpr(rif) => syn::Expr::Paren(syn::ExprParen {
-                attrs: not_implemented!(vec![], "attrs for ref expr"),
+                attrs: self.compile_attrs(rif.attrs()).collect(),
                 paren_token: syn::token::Paren::default(),
                 expr: Box::new(syn::Expr::Cast(syn::ExprCast {
                     attrs: vec![],
@@ -373,19 +397,46 @@ impl CrustCompiler {
                 })),
             }),
             Expr::ReturnExpr(ret) => syn::Expr::Return(syn::ExprReturn {
-                attrs: not_implemented!(vec![], "attrs for return expr"),
+                attrs: self.compile_attrs(ret.attrs()).collect(),
                 return_token: <syn::Token![return]>::default(),
                 expr: ret.expr().map(|expr| Box::new(self.compile_expr(sem, &expr))),
             }),
             Expr::TryExpr(_try_expr) => todo!(),
-            Expr::TupleExpr(_tuple_expr) => todo!(),
-            Expr::UnderscoreExpr(_) => syn::Expr::Infer(syn::ExprInfer {
-                attrs: not_implemented!(vec![], "attrs for underscore expr"),
+            Expr::TupleExpr(tuple) => syn::Expr::Tuple(syn::ExprTuple {
+                attrs: self.compile_attrs(tuple.attrs()).collect(),
+                paren_token: syn::token::Paren::default(),
+                elems: tuple.fields().map(|elem| self.compile_expr(sem, &elem)).collect(),
+            }),
+            Expr::UnderscoreExpr(underscore) => syn::Expr::Infer(syn::ExprInfer {
+                attrs: self.compile_attrs(underscore.attrs()).collect(),
                 underscore_token: <syn::Token![_]>::default(),
             }),
-            Expr::WhileExpr(_while_expr) => todo!(),
+            Expr::WhileExpr(while_expr) => syn::Expr::While(syn::ExprWhile {
+                attrs: self.compile_attrs(while_expr.attrs()).collect(),
+                label: self.compile_label(while_expr.label()),
+                while_token: <syn::Token![while]>::default(),
+                cond: Box::new(self.compile_expr(sem, &while_expr.condition().unwrap())),
+                body: self.compile_block(sem, &while_expr.loop_body().unwrap()),
+            }),
             Expr::YeetExpr(_yeet_expr) => todo!(),
             Expr::YieldExpr(_yield_expr) => todo!(),
+        }
+    }
+
+    fn compile_if<'a>(&self, sem: &'a Semantics<'a, RootDatabase>, if_expr: &ra_ap_syntax::ast::IfExpr) -> syn::ExprIf {
+        syn::ExprIf {
+            attrs: self.compile_attrs(if_expr.attrs()).collect(),
+            if_token: <syn::Token![if]>::default(),
+            cond: Box::new(self.compile_expr(sem, &if_expr.condition().unwrap())),
+            then_branch: self.compile_block(sem, &if_expr.then_branch().unwrap()),
+            else_branch: if_expr.else_branch().map(|else_branch| (<syn::Token![else]>::default(), Box::new(match else_branch {
+                ra_ap_syntax::ast::ElseBranch::Block(block) => syn::Expr::Block(syn::ExprBlock {
+                    attrs: self.compile_attrs(block.attrs()).collect(),
+                    label: self.compile_label(block.label()),
+                    block: self.compile_block(sem, &block),
+                }),
+                ra_ap_syntax::ast::ElseBranch::IfExpr(if_expr) => syn::Expr::If(self.compile_if(sem, &if_expr)),
+            }))),
         }
     }
 
@@ -473,7 +524,7 @@ impl CrustCompiler {
             Pat::BoxPat(_box_pat) => todo!(),
             Pat::ConstBlockPat(_const_block_pat) => todo!(),
             Pat::IdentPat(id) => syn::Pat::Ident(syn::PatIdent {
-                attrs: not_implemented!(vec![], "attrs for ident pat"),
+                attrs: self.compile_attrs(id.attrs()).collect(),
                 by_ref: id.ref_token().map(|_| <syn::Token![ref]>::default()),
                 mutability: id.mut_token().map(|_| <syn::Token![mut]>::default()),
                 ident: syn::Ident::new(&id.name().unwrap().text().to_string(), proc_macro2::Span::call_site()),
@@ -491,11 +542,38 @@ impl CrustCompiler {
             Pat::SlicePat(_slice_pat) => todo!(),
             Pat::TuplePat(_tuple_pat) => todo!(),
             Pat::TupleStructPat(_tuple_struct_pat) => todo!(),
-            Pat::WildcardPat(_wildcard_pat) => syn::Pat::Wild(syn::PatWild {
-                attrs: not_implemented!(vec![], "attrs for wild card pat"),
+            Pat::WildcardPat(_) => syn::Pat::Wild(syn::PatWild {
+                attrs: vec![],
                 underscore_token: <syn::Token![_]>::default(),
             }),
         }
+    }
+
+    fn compile_label(&self, label: Option<ra_ap_syntax::ast::Label>) -> Option<syn::Label> {
+        label.map(|label| syn::Label {
+            name: self.compile_lifetime(label.lifetime().unwrap()),
+            colon_token: <syn::Token![:]>::default(),
+        })
+    }
+
+    fn compile_lifetime(&self, lt: ra_ap_syntax::ast::Lifetime) -> syn::Lifetime {
+        syn::Lifetime::new(&lt.lifetime_ident_token().unwrap().text().to_string(), proc_macro2::Span::call_site())
+    }
+
+    fn compile_attrs(&self, attrs: impl Iterator<Item=ra_ap_syntax::ast::Attr>) -> impl Iterator<Item=syn::Attribute> {
+        attrs.map(|attr| syn::Attribute {
+            pound_token: <syn::Token![#]>::default(),
+            style: if attr.kind() == ra_ap_syntax::ast::AttrKind::Inner {
+                syn::AttrStyle::Inner(<syn::Token![!]>::default())
+            } else {
+                syn::AttrStyle::Outer
+            },
+            bracket_token: syn::token::Bracket::default(),
+            meta: attr.meta().map(|meta| {
+                let meta_stream: proc_macro2::TokenStream = meta.to_string().parse().unwrap();
+                syn::parse_quote! { #meta_stream }
+            }).expect("No Meta info found for attribute"),
+        })
     }
 }
 
