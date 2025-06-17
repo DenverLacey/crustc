@@ -9,7 +9,8 @@ use ra_ap_paths::AbsPathBuf;
 use ra_ap_syntax::{
     ast::{
         BlockExpr, Expr, HasArgList, HasAttrs, HasLoopBody, HasModuleItem, HasName, HasVisibility,
-        Item, Pat, RecordFieldList, Stmt, TupleFieldList, Type, Visibility, VisibilityKind,
+        Item, Pat, RangeItem, RecordFieldList, Stmt, TupleFieldList, Type, Visibility,
+        VisibilityKind,
     },
     AstNode, AstToken, TextRange,
 };
@@ -251,10 +252,22 @@ impl CrustCompiler {
 
     fn compile_expr<'a>(&self, sem: &'a Semantics<'a, RootDatabase>, expr: &Expr) -> syn::Expr {
         match expr {
-            Expr::ArrayExpr(_array_expr) => todo!(),
+            Expr::ArrayExpr(array) => syn::Expr::Array(syn::ExprArray {
+                attrs: self.compile_attrs(array.attrs()).collect(),
+                bracket_token: syn::token::Bracket::default(),
+                elems: array.exprs().map(|elem| self.compile_expr(sem, &elem)).collect(),
+            }),
             Expr::AsmExpr(_asm_expr) => todo!(),
-            Expr::AwaitExpr(_await_expr) => todo!(),
-            Expr::BecomeExpr(_become_expr) => todo!(),
+            Expr::AwaitExpr(await_expr) => syn::Expr::Await(syn::ExprAwait {
+                attrs: self.compile_attrs(await_expr.attrs()).collect(),
+                base: Box::new(self.compile_expr(sem, &await_expr.expr().unwrap())),
+                dot_token: <syn::Token![.]>::default(),
+                await_token: <syn::Token![await]>::default(),
+            }),
+            Expr::BecomeExpr(become_expr) => {
+                self.report_become_expr(become_expr.syntax().text_range());
+                std::process::exit(0); // TODO: Something better
+            }
             Expr::BinExpr(_bin_expr) => todo!(),
             Expr::BlockExpr(block) => syn::Expr::Block(syn::ExprBlock {
                 attrs: self.compile_attrs(block.attrs()).collect(),
@@ -289,7 +302,13 @@ impl CrustCompiler {
             Expr::FormatArgsExpr(_format_args_expr) => todo!(),
             Expr::IfExpr(if_expr) => syn::Expr::If(self.compile_if(sem, if_expr)),
             Expr::IndexExpr(_index_expr) => todo!(),
-            Expr::LetExpr(_let_expr) => todo!(),
+            Expr::LetExpr(let_expr) => syn::Expr::Let(syn::ExprLet {
+                attrs: self.compile_attrs(let_expr.attrs()).collect(),
+                let_token: <syn::Token![let]>::default(),
+                pat: Box::new(self.compile_pat(let_expr.pat().unwrap())),
+                eq_token: <syn::Token![=]>::default(),
+                expr: Box::new(self.compile_expr(sem, &let_expr.expr().unwrap())),
+            }),
             Expr::Literal(lit) => match lit.kind() {
                 ra_ap_syntax::ast::LiteralKind::String(s) => syn::Expr::MethodCall(syn::ExprMethodCall {
                     attrs: vec![],
@@ -344,7 +363,13 @@ impl CrustCompiler {
                 loop_token: <syn::Token![loop]>::default(),
                 body: self.compile_block(sem, &loop_expr.loop_body().unwrap()),
             }),
-            Expr::MacroExpr(_macro_expr) => todo!(),
+            // FIXME: This doesn't compile arguments from crust to rust because it doesn't expose
+            // them as expressions and stuff. (Which makes sense but is annoying.)
+            Expr::MacroExpr(macro_expr) => {
+                let mac = macro_expr.macro_call().expect("No macro call in macro_expr");
+                let mac_stream: proc_macro2::TokenStream = mac.syntax().text().to_string().parse().unwrap();
+                syn::parse_quote! { #mac_stream }
+            }
             Expr::MatchExpr(_match_expr) => todo!(),
             Expr::MethodCallExpr(_method_call_expr) => todo!(),
             Expr::OffsetOfExpr(_offset_of_expr) => todo!(),
@@ -358,8 +383,24 @@ impl CrustCompiler {
                 qself: None, // TODO
                 path: self.compile_path(path.path().unwrap()),
             }),
-            Expr::PrefixExpr(_prefix_expr) => todo!(),
-            Expr::RangeExpr(_range_expr) => todo!(),
+            Expr::PrefixExpr(prefix) => syn::Expr::Unary(syn::ExprUnary {
+                attrs: self.compile_attrs(prefix.attrs()).collect(),
+                op: match prefix.op_kind().unwrap() {
+                    ra_ap_syntax::ast::UnaryOp::Deref => syn::UnOp::Deref(<syn::Token![*]>::default()),
+                    ra_ap_syntax::ast::UnaryOp::Not => syn::UnOp::Not(<syn::Token![!]>::default()),
+                    ra_ap_syntax::ast::UnaryOp::Neg => syn::UnOp::Neg(<syn::Token![-]>::default()),
+                },
+                expr: Box::new(self.compile_expr(sem, &prefix.expr().unwrap())),
+            }),
+            Expr::RangeExpr(range) => syn::Expr::Range(syn::ExprRange {
+                attrs: self.compile_attrs(range.attrs()).collect(),
+                start: range.start().map(|start| Box::new(self.compile_expr(sem, &start))),
+                limits: match range.op_kind().unwrap() {
+                    ra_ap_syntax::ast::RangeOp::Exclusive => syn::RangeLimits::HalfOpen(<syn::Token![..]>::default()),
+                    ra_ap_syntax::ast::RangeOp::Inclusive => syn::RangeLimits::Closed(<syn::Token![..=]>::default()),
+                },
+                end: range.end().map(|end| Box::new(self.compile_expr(sem, &end))),
+            }),
             Expr::RecordExpr(_record_expr) => todo!(),
             Expr::RefExpr(rif) => syn::Expr::Paren(syn::ExprParen {
                 attrs: self.compile_attrs(rif.attrs()).collect(),
@@ -392,7 +433,11 @@ impl CrustCompiler {
                 return_token: <syn::Token![return]>::default(),
                 expr: ret.expr().map(|expr| Box::new(self.compile_expr(sem, &expr))),
             }),
-            Expr::TryExpr(_try_expr) => todo!(),
+            Expr::TryExpr(try_expr) => syn::Expr::Try(syn::ExprTry {
+                attrs: self.compile_attrs(try_expr.attrs()).collect(),
+                expr: Box::new(self.compile_expr(sem, &try_expr.expr().unwrap())),
+                question_token: <syn::Token![?]>::default(),
+            }),
             Expr::TupleExpr(tuple) => syn::Expr::Tuple(syn::ExprTuple {
                 attrs: self.compile_attrs(tuple.attrs()).collect(),
                 paren_token: syn::token::Paren::default(),
@@ -615,6 +660,22 @@ impl CrustCompiler {
                     .label("reference types are not allowed in crust"))
         )
         .footer(Level::Help.title("try using pointers"));
+
+        let renderer = Renderer::styled();
+        println!("{}", renderer.render(message));
+    }
+
+    fn report_become_expr(&self, span: TextRange) {
+        use annotate_snippets::{Level, Renderer, Snippet};
+
+        let message = Level::Error.title("become expression used").snippet(
+            Snippet::source(&self.source)
+                .origin(&self.source_filename)
+                .annotation(Level::Error
+                    .span(span.start().into()..span.end().into())
+                    .label("become expressions are not valid Rust 2021"))
+        )
+        .footer(Level::Note.title("The compiler should make tail-call optimizations automatically"));
 
         let renderer = Renderer::styled();
         println!("{}", renderer.render(message));

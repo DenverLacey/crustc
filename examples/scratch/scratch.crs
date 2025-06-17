@@ -1,5 +1,6 @@
-#[repr(C)]
-struct Foo {
-    blah: i23,
+fn foo(acc: i32, n: i23) {
+    loop {
+        become foo(acc + n, n - 1);
+    }
 }
 
