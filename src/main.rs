@@ -229,7 +229,7 @@ impl CrustCompiler {
         match stmt {
             Stmt::ExprStmt(expr) => syn::Stmt::Expr(
                 self.compile_expr(sem, &expr.expr().unwrap()),
-                Some(<syn::Token![;]>::default())
+                expr.semicolon_token().map(|_| <syn::Token![;]>::default()),
             ),
             Stmt::Item(item) => syn::Stmt::Item(self.compile_item(sem, item)),
             Stmt::LetStmt(let_stmt) => syn::Stmt::Local(syn::Local {
@@ -268,7 +268,77 @@ impl CrustCompiler {
                 self.report_become_expr(become_expr.syntax().text_range());
                 std::process::exit(0); // TODO: Something better
             }
-            Expr::BinExpr(_bin_expr) => todo!(),
+            Expr::BinExpr(bin) => {
+                let attrs = self.compile_attrs(bin.attrs()).collect();
+                let lhs = self.compile_expr(sem, &bin.lhs().unwrap());
+                let rhs = self.compile_expr(sem, &bin.rhs().unwrap());
+
+                if matches!(bin.op_kind().unwrap(), ra_ap_syntax::ast::BinaryOp::Assignment { op: None }) {
+                    syn::Expr::Assign(syn::ExprAssign {
+                        attrs,
+                        left: Box::new(lhs),
+                        eq_token: <syn::Token![=]>::default(),
+                        right: Box::new(rhs),
+                    })
+                } else {
+                    syn::Expr::Binary(syn::ExprBinary {
+                        attrs,
+                        left: Box::new(lhs),
+                        op: match bin.op_kind().unwrap() {
+                            ra_ap_syntax::ast::BinaryOp::LogicOp(logic_op) => match logic_op {
+                                ra_ap_syntax::ast::LogicOp::And => syn::BinOp::And(<syn::Token![&&]>::default()),
+                                ra_ap_syntax::ast::LogicOp::Or => syn::BinOp::Or(<syn::Token![||]>::default()),
+                            },
+                            ra_ap_syntax::ast::BinaryOp::ArithOp(arith_op) => match arith_op {
+                                // TODO: So we want to allow pointer arithmetic?
+                                ra_ap_syntax::ast::ArithOp::Add => syn::BinOp::Add(<syn::Token![+]>::default()),
+                                ra_ap_syntax::ast::ArithOp::Mul => syn::BinOp::Mul(<syn::Token![*]>::default()),
+                                ra_ap_syntax::ast::ArithOp::Sub => syn::BinOp::Sub(<syn::Token![-]>::default()),
+                                ra_ap_syntax::ast::ArithOp::Div => syn::BinOp::Div(<syn::Token![/]>::default()),
+                                ra_ap_syntax::ast::ArithOp::Rem => syn::BinOp::Rem(<syn::Token![%]>::default()),
+                                ra_ap_syntax::ast::ArithOp::Shl => syn::BinOp::Shl(<syn::Token![<<]>::default()),
+                                ra_ap_syntax::ast::ArithOp::Shr => syn::BinOp::Shr(<syn::Token![>>]>::default()),
+                                ra_ap_syntax::ast::ArithOp::BitXor => syn::BinOp::BitXor(<syn::Token![^]>::default()),
+                                ra_ap_syntax::ast::ArithOp::BitOr => syn::BinOp::BitOr(<syn::Token![|]>::default()),
+                                ra_ap_syntax::ast::ArithOp::BitAnd => syn::BinOp::BitAnd(<syn::Token![&]>::default()),
+                            },
+                            ra_ap_syntax::ast::BinaryOp::CmpOp(cmp_op) => match cmp_op {
+                                ra_ap_syntax::ast::CmpOp::Eq { negated } => if negated {
+                                    syn::BinOp::Ne(<syn::Token![!=]>::default())
+                                } else {
+                                    syn::BinOp::Eq(<syn::Token![==]>::default())
+                                },
+                                ra_ap_syntax::ast::CmpOp::Ord { ordering, strict } => match ordering {
+                                    ra_ap_syntax::ast::Ordering::Less => if strict {
+                                        syn::BinOp::Lt(<syn::Token![<]>::default())
+                                    } else {
+                                        syn::BinOp::Le(<syn::Token![<=]>::default())
+                                    },
+                                    ra_ap_syntax::ast::Ordering::Greater => if strict {
+                                        syn::BinOp::Gt(<syn::Token![>]>::default())
+                                    } else {
+                                        syn::BinOp::Ge(<syn::Token![>=]>::default())
+                                    },
+                                },
+                            },
+                            ra_ap_syntax::ast::BinaryOp::Assignment { op: None } => unreachable!(),
+                            ra_ap_syntax::ast::BinaryOp::Assignment { op: Some(op) } => match op {
+                                ra_ap_syntax::ast::ArithOp::Add => syn::BinOp::AddAssign(<syn::Token![+=]>::default()),
+                                ra_ap_syntax::ast::ArithOp::Mul => syn::BinOp::MulAssign(<syn::Token![*=]>::default()),
+                                ra_ap_syntax::ast::ArithOp::Sub => syn::BinOp::SubAssign(<syn::Token![-=]>::default()),
+                                ra_ap_syntax::ast::ArithOp::Div => syn::BinOp::DivAssign(<syn::Token![/=]>::default()),
+                                ra_ap_syntax::ast::ArithOp::Rem => syn::BinOp::RemAssign(<syn::Token![%=]>::default()),
+                                ra_ap_syntax::ast::ArithOp::Shl => syn::BinOp::ShlAssign(<syn::Token![<<=]>::default()),
+                                ra_ap_syntax::ast::ArithOp::Shr => syn::BinOp::ShrAssign(<syn::Token![>>=]>::default()),
+                                ra_ap_syntax::ast::ArithOp::BitXor => syn::BinOp::BitXorAssign(<syn::Token![^=]>::default()),
+                                ra_ap_syntax::ast::ArithOp::BitOr => syn::BinOp::BitOrAssign(<syn::Token![|=]>::default()),
+                                ra_ap_syntax::ast::ArithOp::BitAnd => syn::BinOp::BitAndAssign(<syn::Token![&=]>::default()),
+                            },
+                        },
+                        right: Box::new(rhs),
+                    })
+                }
+            }
             Expr::BlockExpr(block) => syn::Expr::Block(syn::ExprBlock {
                 attrs: self.compile_attrs(block.attrs()).collect(),
                 label: self.compile_label(block.label()),
