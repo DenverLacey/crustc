@@ -356,7 +356,12 @@ impl CrustCompiler {
                 paren_token: syn::token::Paren::default(),
                 args: call.arg_list().unwrap().args().map(|arg| self.compile_expr(sem, &arg)).collect(),
             }),
-            Expr::CastExpr(_cast_expr) => todo!(),
+            Expr::CastExpr(cast) => syn::Expr::Cast(syn::ExprCast {
+                attrs: self.compile_attrs(cast.attrs()).collect(),
+                expr: Box::new(self.compile_expr(sem, &cast.expr().unwrap())),
+                as_token: <syn::Token![as]>::default(),
+                ty: Box::new(self.compile_type(sem, cast.ty().unwrap())),
+            }),
             Expr::ClosureExpr(_closure_expr) => todo!(),
             Expr::ContinueExpr(_continue_expr) => todo!(),
             Expr::FieldExpr(_field_expr) => todo!(),
