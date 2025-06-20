@@ -370,7 +370,18 @@ impl CrustCompiler {
                 asyncness: closure.async_token().map(|_| <syn::Token![async]>::default()),
                 capture: closure.move_token().map(|_| <syn::Token![move]>::default()),
                 or1_token: <syn::Token![|]>::default(),
-                inputs: todo!(),
+                inputs: closure.param_list().unwrap().params().map(|param| {
+                    if let Some(ty) = param.ty() {
+                        syn::Pat::Type(syn::PatType {
+                            attrs: self.compile_attrs(param.attrs()).collect(),
+                            pat: Box::new(self.compile_pat(param.pat().unwrap())),
+                            colon_token: <syn::Token![:]>::default(),
+                            ty: Box::new(self.compile_type(sem, ty)),
+                        })
+                    } else {
+                        self.compile_pat(param.pat().unwrap())
+                    }
+                }).collect(),
                 or2_token: <syn::Token![|]>::default(),
                 output: closure
                     .ret_type()
