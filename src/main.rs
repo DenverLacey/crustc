@@ -518,7 +518,25 @@ impl CrustCompiler {
                 },
                 end: range.end().map(|end| Box::new(self.compile_expr(sem, &end))),
             }),
-            Expr::RecordExpr(_record_expr) => todo!(),
+            Expr::RecordExpr(record) => syn::Expr::Struct(syn::ExprStruct {
+                attrs: vec![],
+                qself: stub!(None, "qself for struct expressions"),
+                path: self.compile_path(record.path().unwrap()),
+                brace_token: syn::token::Brace::default(),
+                fields: record.record_expr_field_list().unwrap().fields().map(|field| syn::FieldValue {
+                    attrs: self.compile_attrs(field.attrs()).collect(),
+                    member: syn::Member::Named(
+                        syn::Ident::new(
+                            field.field_name().expect("Struct literals without explicit member names not yet implemented.").text_non_mutable(),
+                            proc_macro2::Span::call_site(),
+                        ),
+                    ),
+                    colon_token: field.colon_token().map(|_| <syn::Token![:]>::default()),
+                    expr: self.compile_expr(sem, &field.expr().unwrap()),
+                }).collect(),
+                dot2_token: stub!(None, "handling ..rest for struct literals not yet implemented."),
+                rest: stub!(None, "handling ..rest for struct literals not yet implemented."),
+            }),
             Expr::RefExpr(rif) => syn::Expr::Paren(syn::ExprParen {
                 attrs: self.compile_attrs(rif.attrs()).collect(),
                 paren_token: syn::token::Paren::default(),
