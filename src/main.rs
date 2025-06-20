@@ -362,8 +362,26 @@ impl CrustCompiler {
                 as_token: <syn::Token![as]>::default(),
                 ty: Box::new(self.compile_type(sem, cast.ty().unwrap())),
             }),
-            Expr::ClosureExpr(_closure_expr) => todo!(),
-            Expr::ContinueExpr(_continue_expr) => todo!(),
+            Expr::ClosureExpr(closure) => syn::Expr::Closure(syn::ExprClosure {
+                attrs: self.compile_attrs(closure.attrs()).collect(),
+                lifetimes: stub!(None, "bound lifetimes for closures"),
+                constness: closure.const_token().map(|_| <syn::Token![const]>::default()),
+                movability: closure.static_token().map(|_| <syn::Token![static]>::default()),
+                asyncness: closure.async_token().map(|_| <syn::Token![async]>::default()),
+                capture: closure.move_token().map(|_| <syn::Token![move]>::default()),
+                or1_token: <syn::Token![|]>::default(),
+                inputs: todo!(),
+                or2_token: <syn::Token![|]>::default(),
+                output: closure
+                    .ret_type()
+                    .map_or(syn::ReturnType::Default, |ret| syn::ReturnType::Type(<syn::Token![->]>::default(), Box::new(self.compile_type(sem, ret.ty().unwrap())))),
+                body: Box::new(self.compile_expr(sem, &closure.body().unwrap())),
+            }),
+            Expr::ContinueExpr(continue_expr) => syn::Expr::Continue(syn::ExprContinue {
+                attrs: self.compile_attrs(continue_expr.attrs()).collect(),
+                continue_token: <syn::Token![continue]>::default(),
+                label: continue_expr.lifetime().map(|lt| self.compile_lifetime(lt)),
+            }),
             Expr::FieldExpr(_field_expr) => todo!(),
             Expr::ForExpr(for_expr) => syn::Expr::ForLoop(syn::ExprForLoop {
                 attrs: self.compile_attrs(for_expr.attrs()).collect(),
