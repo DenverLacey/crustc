@@ -474,7 +474,20 @@ impl CrustCompiler {
                 let mac_stream: proc_macro2::TokenStream = mac.syntax().text().to_string().parse().unwrap();
                 syn::parse_quote! { #mac_stream }
             }
-            Expr::MatchExpr(_match_expr) => todo!(),
+            Expr::MatchExpr(match_expr) => syn::Expr::Match(syn::ExprMatch {
+                attrs: self.compile_attrs(match_expr.attrs()).collect(),
+                match_token: <syn::Token![match]>::default(),
+                expr: Box::new(self.compile_expr(sem, &match_expr.expr().unwrap())),
+                brace_token: syn::token::Brace::default(),
+                arms: match_expr.match_arm_list().unwrap().arms().map(|arm| syn::Arm {
+                    attrs: self.compile_attrs(arm.attrs()).collect(),
+                    pat: self.compile_pat(arm.pat().unwrap()),
+                    guard: arm.guard().map(|guard| (<syn::Token![if]>::default(), Box::new(self.compile_expr(sem, &guard.condition().unwrap())))),
+                    fat_arrow_token: <syn::Token![=>]>::default(),
+                    body: Box::new(self.compile_expr(sem, &arm.expr().unwrap())),
+                    comma: arm.comma_token().map(|_| <syn::Token![,]>::default()),
+                }).collect(),
+            }),
             Expr::MethodCallExpr(_method_call_expr) => todo!(),
             Expr::OffsetOfExpr(_offset_of_expr) => todo!(),
             Expr::ParenExpr(paren) => syn::Expr::Paren(syn::ExprParen {
