@@ -12,3 +12,10 @@ pub unsafe fn bar(n: i32) -> i32 {
     }
     k
 }
+#[derive(Clone, Copy)]
+pub struct Foo {
+    pub x: i32,
+}
+pub unsafe fn baz(foos: *const [*const Foo]) -> i32 {
+    (*foos)[4].x
+}

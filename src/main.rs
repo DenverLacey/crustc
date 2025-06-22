@@ -31,7 +31,7 @@ macro_rules! stub {
     }};
 }
 
-struct CrustCompiler {
+struct Compiler {
     source: String,
     source_filename: String,
     outfile: syn::File,
@@ -39,7 +39,7 @@ struct CrustCompiler {
 
 struct FailedToOpenSourceFile;
 
-impl CrustCompiler {
+impl Compiler {
     fn new(filename: impl Into<String>) -> Result<Self, FailedToOpenSourceFile> {
         let filename = filename.into();
         Ok(Self {
@@ -56,7 +56,7 @@ impl CrustCompiler {
     }
 }
 
-impl CrustCompiler {
+impl Compiler {
     fn compile_item<'a>(&self, sem: &'a Semantics<'a, RootDatabase>, item: &Item) -> syn::Item {
         match item {
             Item::Const(konst) => {
@@ -393,7 +393,40 @@ impl CrustCompiler {
                 continue_token: <syn::Token![continue]>::default(),
                 label: continue_expr.lifetime().map(|lt| self.compile_lifetime(lt)),
             }),
-            Expr::FieldExpr(_field_expr) => todo!(),
+            Expr::FieldExpr(field) => {
+                let base = field.expr().expect("No base expression for field access expression");
+                let base_ty = sem.type_of_expr(&base).expect("Failed to get type of base expr of field expr");
+
+                let mut base = self.compile_expr(sem, &base);
+                if base_ty.original.is_raw_ptr() {
+                    // TODO: This doesn't handle nested/chained expressions that require
+                    // auto-dereferencing
+                    base = syn::Expr::Paren(syn::ExprParen {
+                        attrs: vec![],
+                        paren_token: syn::token::Paren::default(),
+                        expr: Box::new(syn::Expr::Unary(syn::ExprUnary {
+                            attrs: vec![],
+                            op: syn::UnOp::Deref(<syn::Token![*]>::default()),
+                            expr: Box::new(base),
+                        })),
+                    })
+                } else if base_ty.original.is_unknown() {
+                    let text_range = field.syntax().text_range();
+                    self.warn(text_range, "Unknown base_ty for field expr");
+                }
+
+                syn::Expr::Field(syn::ExprField {
+                    attrs: self.compile_attrs(field.attrs()).collect(),
+                    base: Box::new(base),
+                    dot_token: <syn::Token![.]>::default(),
+                    member: field.field_access().map(|acc| match acc {
+                        ra_ap_syntax::ast::FieldKind::Name(name_ref) => syn::Member::Named(
+                            syn::Ident::new(name_ref.text().as_str(), proc_macro2::Span::call_site()),
+                        ),
+                        ra_ap_syntax::ast::FieldKind::Index(_syntax_token) => todo!(),
+                    }).expect("No member in field access expression"),
+                })
+            }
             Expr::ForExpr(for_expr) => syn::Expr::ForLoop(syn::ExprForLoop {
                 attrs: self.compile_attrs(for_expr.attrs()).collect(),
                 label: self.compile_label(for_expr.label()),
@@ -405,7 +438,35 @@ impl CrustCompiler {
             }),
             Expr::FormatArgsExpr(_format_args_expr) => todo!(),
             Expr::IfExpr(if_expr) => syn::Expr::If(self.compile_if(sem, if_expr)),
-            Expr::IndexExpr(_index_expr) => todo!(),
+            Expr::IndexExpr(index) => {
+                let base = index.base().unwrap();
+                let base_ty = sem.type_of_expr(&base).expect("Failed to get type of base expression in index expression");
+
+                let mut base = self.compile_expr(sem, &base);
+
+                if base_ty.original.is_raw_ptr() {
+                    // TODO: This doesn't handle nested/chained expressions that require
+                    // auto-dereferencing, e.g.
+                    base = syn::Expr::Paren(syn::ExprParen {
+                        attrs: vec![],
+                        paren_token: syn::token::Paren::default(),
+                        expr: Box::new(
+                            syn::Expr::Unary(syn::ExprUnary {
+                                attrs: vec![],
+                                op: syn::UnOp::Deref(<syn::Token![*]>::default()),
+                                expr: Box::new(base),
+                            })
+                        ),
+                    }) ;
+                }
+
+                syn::Expr::Index(syn::ExprIndex {
+                    attrs: self.compile_attrs(index.attrs()).collect(),
+                    expr: Box::new(base),
+                    bracket_token: syn::token::Bracket::default(),
+                    index: Box::new(self.compile_expr(sem, &index.index().unwrap())),
+                })
+            }
             Expr::LetExpr(let_expr) => syn::Expr::Let(syn::ExprLet {
                 attrs: self.compile_attrs(let_expr.attrs()).collect(),
                 let_token: <syn::Token![let]>::default(),
@@ -783,7 +844,22 @@ impl CrustCompiler {
     }
 }
 
-impl CrustCompiler {
+impl Compiler {
+    fn warn(&self, span: TextRange, msg: impl AsRef<str>) {
+        use annotate_snippets::{Level, Renderer, Snippet};
+        
+        let message = Level::Warning.title(msg.as_ref()).snippet(
+            Snippet::source(&self.source)
+                .origin(&self.source_filename)
+                .annotation(Level::Warning
+                    .span(span.start().into()..span.end().into())
+                    .label(msg.as_ref()))
+        );
+
+        let renderer = Renderer::styled();
+        println!("{}", renderer.render(message));
+    }
+
     fn report_reference_type(&self, span: TextRange) {
         use annotate_snippets::{Level, Renderer, Snippet};
 
@@ -869,7 +945,7 @@ fn main() {
         return;
     };
 
-    let mut compiler = CrustCompiler::new(file.clone()).unwrap_or_else(|_| {
+    let mut compiler = Compiler::new(file.clone()).unwrap_or_else(|_| {
         let args = Box::leak(env::args()
             .collect::<Vec<_>>()
             .into_boxed_slice());

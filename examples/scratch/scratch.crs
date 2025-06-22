@@ -12,3 +12,12 @@ fn bar(n: i32) -> i32 {
     }
     k
 }
+
+struct Foo {
+    x: i32,
+}
+
+fn baz(foos: *const [*const Foo]) -> i32 {
+    foos[4].x
+}
+
